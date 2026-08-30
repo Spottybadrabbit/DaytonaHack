@@ -1,0 +1,13 @@
+# Keep the deployment upload lean — these are never needed by the build.
+.claude
+.git
+node_modules
+dist
+convex/_generated
+backend
+docs
+brand
+scripts/_tmp-*
+*.log
+.env*
+!.env.example

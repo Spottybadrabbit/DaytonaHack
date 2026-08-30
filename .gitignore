@@ -17,3 +17,4 @@ supabase/.temp/
 
 # Local Claude Code worktrees
 .claude/worktrees/
+.env*

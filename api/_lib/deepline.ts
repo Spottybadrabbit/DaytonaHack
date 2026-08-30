@@ -183,11 +183,21 @@ export async function pollGtmRun(input: {
   return parseGtmOutput(raw);
 }
 
+/**
+ * Daytona multiplexes async session logs and frames each chunk with control
+ * bytes (`\x01\x01\x01...`), which `trim()` does not remove. Strip them before
+ * matching, or every marker check silently fails.
+ */
+function cleanLogLine(line: string): string {
+  // eslint-disable-next-line no-control-regex
+  return line.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim();
+}
+
 export function parseGtmOutput(raw: string): GtmProgress {
   let authorizationUrl: string | null = null;
 
   for (const line of raw.split("\n")) {
-    const text = line.trim();
+    const text = cleanLogLine(line);
     if (text.startsWith("::deepline-result:")) {
       const body = text.slice("::deepline-result:".length);
       try {

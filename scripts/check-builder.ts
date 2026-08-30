@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { transform } from "esbuild";
 import { runnerSource } from "../api/builder/build.js";
-import { GTM_COMMAND, GTM_TOOLS, gtmRunnerSource } from "../api/_lib/deepline.js";
+import { GTM_COMMAND, GTM_TOOLS, gtmRunnerSource, parseGtmOutput } from "../api/_lib/deepline.js";
 
 /* ------------------------------------------------------------------ *
  * Site builder runner — Claude Code with file tools only
@@ -46,6 +46,22 @@ assert.match(GTM_COMMAND, /node gtm-runner\.mjs$/);
 assert.doesNotMatch(gtm, /claude-agent-sdk|createServer|listen\(/);
 
 assert.match(gtm, new RegExp(gtmMarker));
+
+/* Marker parsing must survive Daytona's async-session log framing, which
+ * prefixes each chunk with control bytes that `trim()` does not remove. */
+{
+  const framed = "\u0001\u0001\u0001::deepline-result:" + JSON.stringify({ ok: true }) + "\n";
+  const parsed = parseGtmOutput(framed);
+  assert.equal(parsed.status, "succeeded", "control-byte framed result must parse");
+  assert.deepEqual(parsed.result, { ok: true });
+
+  const framedAuth = "\u0001\u0001\u0001::deepline-auth:https://deepline.com/approve/abc\n";
+  const auth = parseGtmOutput(framedAuth);
+  assert.equal(auth.authorizationUrl, "https://deepline.com/approve/abc");
+  assert.equal(auth.status, "failed", "an unauthorized run must not look successful");
+
+  assert.equal(parseGtmOutput("\u0001\u0001\u0001still installing\n").status, "running");
+}
 assert.ok(GTM_TOOLS.length > 0, "the GTM tool allowlist must not be empty");
 await transform(gtm, { loader: "js", format: "esm" });
 
