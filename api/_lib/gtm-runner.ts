@@ -74,18 +74,52 @@ async function tool(agentId, cycle, toolId, payload) {
   const r = await run(["tools", "execute", toolId, "--payload", JSON.stringify(payload)]);
   let parsed;
   try { parsed = JSON.parse(r.stdout); } catch { parsed = { raw: r.stdout.slice(0, 8000) }; }
-  const ok = r.code === 0;
+  const body = parsed?.toolResponse?.rawV2 ?? parsed?.toolResponse?.raw ?? parsed;
+  const reportedStatus = parsed?.status ?? body?.status;
+  const stdoutError = r.stdout.trimStart().startsWith("Error:");
+  const failedStatus = reportedStatus === "failed" || reportedStatus === "FAILED";
+  const ok = r.code === 0 && !stdoutError && !failedStatus;
   const elapsed = Date.now() - start;
-  emit("event", { step: "tool", tool: toolId, ok, elapsed, cycle });
-  return { ok, parsed, raw: r.stdout, stderr: r.stderr };
+  const rawErrorText = (stdoutError ? r.stdout : r.stderr).trim();
+  const errorText = (process.env.DEEPLINE_API_KEY
+    ? rawErrorText.replace(process.env.DEEPLINE_API_KEY, "[redacted]")
+    : rawErrorText).slice(0, 200);
+  emit("event", {
+    step: "tool",
+    tool: toolId,
+    ok,
+    elapsed,
+    cycle,
+    ...(ok ? {} : { error: errorText || "tool failed" }),
+  });
+  return { ok, parsed, body, raw: r.stdout, stderr: r.stderr };
 }
 
-async function tryTools(agentId, cycle, list, payload) {
+async function tryTools(agentId, cycle, list, ctx) {
   for (const toolId of list) {
-    const out = await tool(agentId, cycle, toolId, payload);
-    if (out.ok && !empty(out.parsed)) return { ...out, tool: toolId };
+    const out = await tool(agentId, cycle, toolId, payloadFor(toolId, ctx));
+    if (out.ok && !empty(out.body)) return { ...out, tool: toolId };
   }
   return null;
+}
+
+function payloadFor(toolId, ctx) {
+  switch (toolId) {
+    case "exa_people_search":
+      return { query: ctx.query, numResults: ctx.numResults, type: "auto" };
+    case "enrich_contact":
+      return Object.fromEntries(
+        Object.entries({
+          linkedin: ctx.linkedin_url,
+          full_name: ctx.name,
+          domain: ctx.domain,
+        }).filter(([, value]) => value != null),
+      );
+    case "hunter_email_verifier":
+      return { email: ctx.email };
+    default:
+      return ctx;
+  }
 }
 
 function empty(v) {
@@ -94,27 +128,6 @@ function empty(v) {
   if (v.results && Array.isArray(v.results) && v.results.length === 0) return true;
   if (v.contacts && Array.isArray(v.contacts) && v.contacts.length === 0) return true;
   return false;
-}
-
-function first(arr) { return Array.isArray(arr) ? arr[0] : arr; }
-
-function companyOf(hit) {
-  const domain = (hit.domain || hit.company_domain || hit.website_url || "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
-  const name = hit.name || hit.company_name || hit.company || domain;
-  return { name, domain };
-}
-
-function peopleOf(parsed) {
-  const arr = Array.isArray(parsed)
-    ? parsed
-    : (parsed.results || parsed.contacts || parsed.people || parsed.data || []);
-  return arr.map((p) => {
-    const person = p.person || p;
-    const email = (person.email || p.email || "").toLowerCase();
-    const name = person.name || person.full_name || ((person.first_name || "") + " " + (person.last_name || "")).trim() || null;
-    const title = person.title || person.job_title || person.role || p.title || null;
-    return { name, title, email: email || null, linkedin_url: person.linkedin_url || p.linkedin_url || null, raw: p };
-  }).filter((p) => p.email || p.linkedin_url);
 }
 
 function draftBody(lead, icp) {
@@ -139,12 +152,15 @@ async function runCycle(agentId, state, icp, suppression) {
     state.daily_sent = 0;
   }
 
-  const search = await tryTools(agentId, cycle, icp.search_tools || ["apollo_search_people"], {
-    query: icp.query || icp.industry || "startups",
-    industry: icp.industry,
-    location: icp.location,
-    employee_count: icp.employee_count,
-    limit: Math.min(icp.limit || 10, 25),
+  const query = [
+    icp.query || icp.industry || "startups",
+    (icp.roles || []).join(" or "),
+    icp.location,
+  ].filter(Boolean).join(", ");
+  const search = await tryTools(agentId, cycle, icp.search_tools || ["exa_people_search"], {
+    query,
+    numResults: Math.min(icp.limit || 10, 25),
+    type: "auto",
   });
 
   if (!search) {
@@ -152,71 +168,112 @@ async function runCycle(agentId, state, icp, suppression) {
     return { ...state, cycle, last_cycle_at: now };
   }
 
-  const hits = Array.isArray(search.parsed) ? search.parsed : (search.parsed.results || search.parsed.companies || search.parsed.people || []);
+  const hits = Array.isArray(search.body?.results) ? search.body.results : [];
   emit("event", { step: "search_results", cycle, count: hits.length, tool: search.tool });
 
-  const queue = hits.slice(0, icp.max_companies_per_cycle || 3);
+  const maxLeads = icp.max_leads_per_cycle || 3;
   let newLeads = 0;
 
-  for (const hit of queue) {
-    const company = companyOf(hit);
-    if (!company.domain || suppression.domains?.includes(company.domain)) {
-      emit("event", { step: "skip_company", cycle, domain: company.domain });
+  for (const item of hits) {
+    if (newLeads >= maxLeads || newLeads >= LEAD_CAP) break;
+    const props = item.entities?.[0]?.properties || {};
+    const workHistory = Array.isArray(props.workHistory) ? props.workHistory : [];
+    const current = workHistory.find((w) => !w?.dates?.to) || workHistory[0];
+    const candidate = {
+      name: props.name || item.title || null,
+      linkedin_url: item.url?.includes("linkedin.com") ? item.url : null,
+      title: current?.title || null,
+      company_name: current?.company?.name || null,
+      domain: current?.company?.domain || props.company_domain || null,
+    };
+    if (!candidate.linkedin_url && !candidate.name) continue;
+
+    const enrich = await tryTools(agentId, cycle, icp.contact_tools || ["enrich_contact"], candidate);
+    const person = enrich?.body?.output?.person || {};
+    const email = (person.professional_email || person.personal_email || "").toLowerCase() || null;
+    const name = person.full_name
+      || candidate.name
+      || [person.first_name, person.last_name].filter(Boolean).join(" ")
+      || null;
+    if (!email) {
+      emit("event", { step: "no_email", cycle, name });
       continue;
     }
 
-    const enrich = await tool(agentId, cycle, "company_enrich", { domain: company.domain, company_name: company.name });
-    if (enrich.ok) emit("event", { step: "company_enriched", cycle, domain: company.domain });
+    const domain = person.company_domain || candidate.domain || null;
+    if (suppression.emails?.includes(email) || (domain && suppression.domains?.includes(domain))) {
+      continue;
+    }
 
-    const contacts = await tryTools(agentId, cycle, icp.contact_tools || ["company_to_contact_by_role_waterfall", "apollo_search_people"], {
-      domain: company.domain,
-      company_name: company.name,
-      roles: icp.roles || ["Head of Growth", "VP Sales", "Founder"],
-      limit: icp.contacts_per_company || 2,
+    const verify = await tryTools(agentId, cycle, icp.verify_tools || ["hunter_email_verifier"], { email });
+    const v = verify?.body?.data || {};
+    const accepted = verify
+      ? v.status === "valid"
+        || (v.status === "accept_all" && (v.score ?? 0) >= 70)
+      : person.email_verified === true;
+    if (!accepted) {
+      emit("event", { step: "email_rejected", cycle, outcome: v.status || "unverified" });
+      continue;
+    }
+
+    const verification = {
+      status: v.status || (person.email_verified ? "provider_verified" : "unverified"),
+      score: v.score ?? null,
+      source: "hunter_email_verifier",
+    };
+    const lead = {
+      name,
+      title: person.title || candidate.title || null,
+      email,
+      linkedin_url: person.linkedin_url || candidate.linkedin_url || null,
+      company_name: person.company_name || candidate.company_name || null,
+      domain,
+      seniority: person.seniority || null,
+      verification,
+      created_at: now,
+      source_tool: enrich.tool,
+      cycle,
+    };
+    await appendJsonl(join(DIR, "leads.jsonl"), lead);
+    emit("lead", {
+      cycle,
+      lead: {
+        name: lead.name,
+        title: lead.title,
+        email: lead.email,
+        linkedin_url: lead.linkedin_url,
+        company_name: lead.company_name,
+        domain: lead.domain,
+        verification: lead.verification,
+        seniority: lead.seniority,
+      },
     });
+    newLeads += 1;
 
-    if (!contacts) {
-      emit("event", { step: "no_contacts", cycle, domain: company.domain });
-      continue;
-    }
+    const draft = {
+      to: lead.email,
+      subject: icp.subject || ("Quick note for " + (lead.company_name || lead.domain)),
+      body: draftBody(lead, icp),
+      lead: { name: lead.name, email: lead.email, title: lead.title, company: lead.company_name },
+      status: "draft",
+      cycle,
+      created_at: now,
+    };
 
-    const people = peopleOf(contacts.parsed);
-    emit("event", { step: "contacts", cycle, domain: company.domain, count: people.length });
-
-    for (const p of people) {
-      if (p.email && suppression.emails?.includes(p.email)) continue;
-      if (p.email) {
-        const v = await tool(agentId, cycle, "email_verify", { email: p.email });
-        if (!v.ok || v.parsed?.safe === false) continue;
-        p.verified = true;
-      }
-
-      const lead = { ...p, company_name: company.name, domain: company.domain, created_at: now, source_tool: contacts.tool, cycle };
-      await appendJsonl(join(DIR, "leads.jsonl"), lead);
-      emit("lead", { cycle, lead: { name: lead.name, email: lead.email, company: lead.company_name, title: lead.title } });
-      newLeads += 1;
-
-      const draft = {
-        to: lead.email,
-        subject: icp.subject || ("Quick note for " + (lead.company_name || lead.domain)),
-        body: draftBody(lead, icp),
-        lead: { name: lead.name, email: lead.email, title: lead.title, company: lead.company_name },
-        status: "draft",
+    if (state.mode === "autosend" && (state.daily_sent || 0) < (icp.daily_email_cap || 10)) {
+      const sent = await sendOne(agentId, cycle, draft, icp);
+      if (sent.ok) state.daily_sent = (state.daily_sent || 0) + 1;
+    } else {
+      await appendJsonl(join(DIR, "outreach.jsonl"), draft);
+      emit("outreach", {
         cycle,
-        created_at: now,
-      };
-
-      if (state.mode === "autosend" && (state.daily_sent || 0) < (icp.daily_email_cap || 10)) {
-        const sent = await sendOne(agentId, cycle, draft, icp);
-        if (sent.ok && sent.ok) state.daily_sent = (state.daily_sent || 0) + 1;
-      } else {
-        await appendJsonl(join(DIR, "outreach.jsonl"), draft);
-        emit("outreach", { cycle, status: "draft", to: draft.to });
-      }
-
-      if (newLeads >= LEAD_CAP) break;
+        status: "draft",
+        to: draft.to,
+        subject: draft.subject,
+        body: draft.body,
+        tool: null,
+      });
     }
-    if (newLeads >= LEAD_CAP) break;
   }
 
   // Send anything the user explicitly approved between cycles.
@@ -235,7 +292,14 @@ async function sendOne(agentId, cycle, draft, icp) {
   const r = await tool(agentId, cycle, toolId, { to: draft.to, subject: draft.subject, body: draft.body, ...draft.lead });
   const out = { ...draft, status: r.ok ? "sent" : "failed", provider_result: r.parsed, sent_at: r.ok ? new Date().toISOString() : undefined };
   await appendJsonl(join(DIR, "outreach.jsonl"), out);
-  emit("outreach", { cycle, status: out.status, to: draft.to, tool: toolId });
+  emit("outreach", {
+    cycle,
+    status: out.status,
+    to: draft.to,
+    subject: draft.subject,
+    body: draft.body,
+    tool: toolId,
+  });
   return r;
 }
 

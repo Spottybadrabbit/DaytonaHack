@@ -2,8 +2,73 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/react";
 import { ArrowUpRight, Loader2 } from "lucide-react";
 import { RUN_LABELS, RUN_STATUS_LABELS, fetchRun, type RunView } from "@/lib/chat";
+import {
+  EXPORT_BUTTON_CLASS,
+  downloadText,
+  slugify,
+  toCsv,
+  toMarkdownTable,
+  type ExportColumn,
+} from "@/lib/export";
 
 const POLL_MS = 4000;
+
+function exportFilename(run: RunView, extension: string): string {
+  return `fieldlab-${slugify(run.title)}-${run.id.slice(0, 8)}.${extension}`;
+}
+
+function scalarCandidateColumns(candidates: Array<Record<string, unknown>>): ExportColumn[] {
+  const keys = new Set<string>();
+  for (const candidate of candidates) {
+    for (const [key, value] of Object.entries(candidate)) {
+      if (value == null || typeof value === "object") continue;
+      keys.add(key);
+    }
+  }
+  const preferred = ["name", "matchStatus", "description", "url"];
+  const ordered = [
+    ...preferred.filter((key) => keys.has(key)),
+    ...Array.from(keys).filter((key) => !preferred.includes(key)),
+  ];
+  return ordered.map((key) => ({ key, label: key }));
+}
+
+function ExportControls({
+  run,
+  columns,
+  rows,
+  markdownOnly = false,
+  markdownText,
+}: {
+  run: RunView;
+  columns: ExportColumn[];
+  rows: Array<Record<string, unknown>>;
+  markdownOnly?: boolean;
+  markdownText?: string;
+}) {
+  const csv = toCsv(columns, rows);
+  const markdown = markdownText ?? toMarkdownTable(columns, rows);
+  return (
+    <div className="mt-4 flex justify-end gap-2">
+      {!markdownOnly ? (
+        <button
+          type="button"
+          className={EXPORT_BUTTON_CLASS}
+          onClick={() => downloadText(exportFilename(run, "csv"), "text/csv;charset=utf-8", csv)}
+        >
+          CSV
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className={EXPORT_BUTTON_CLASS}
+        onClick={() => downloadText(exportFilename(run, "md"), "text/markdown;charset=utf-8", markdown)}
+      >
+        MD
+      </button>
+    </div>
+  );
+}
 
 /** Renders a FindAll candidate roster, an enrichment record, or a markdown report. */
 function RunResult({ run }: { run: RunView }) {
@@ -13,34 +78,38 @@ function RunResult({ run }: { run: RunView }) {
   // FindAll — a roster of candidates.
   if (typeof result === "object" && Array.isArray((result as { candidates?: unknown }).candidates)) {
     const candidates = (result as { candidates: Array<Record<string, unknown>> }).candidates;
+    const columns = scalarCandidateColumns(candidates);
     return (
-      <ul className="mt-4 divide-y divide-foreground/10 border-t border-foreground/10">
-        {candidates.map((candidate, index) => (
-          <li key={`${index}-${String(candidate.name)}`} className="py-3">
-            <div className="flex items-baseline justify-between gap-4">
-              <span className="text-sm">{String(candidate.name ?? "Unnamed")}</span>
-              <span className="shrink-0 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                {String(candidate.matchStatus ?? "")}
-              </span>
-            </div>
-            {candidate.description ? (
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {String(candidate.description)}
-              </p>
-            ) : null}
-            {candidate.url ? (
-              <a
-                href={String(candidate.url)}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="mt-1 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
-              >
-                source <ArrowUpRight className="h-3 w-3" />
-              </a>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+      <>
+        <ExportControls run={run} columns={columns} rows={candidates} />
+        <ul className="mt-4 divide-y divide-foreground/10 border-t border-foreground/10">
+          {candidates.map((candidate, index) => (
+            <li key={`${index}-${String(candidate.name)}`} className="py-3">
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-sm">{String(candidate.name ?? "Unnamed")}</span>
+                <span className="shrink-0 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                  {String(candidate.matchStatus ?? "")}
+                </span>
+              </div>
+              {candidate.description ? (
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  {String(candidate.description)}
+                </p>
+              ) : null}
+              {candidate.url ? (
+                <a
+                  href={String(candidate.url)}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-1 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
+                >
+                  source <ArrowUpRight className="h-3 w-3" />
+                </a>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </>
     );
   }
 
@@ -48,27 +117,51 @@ function RunResult({ run }: { run: RunView }) {
   const content = typeof result === "object" ? (result as { content?: unknown }).content : result;
 
   if (typeof content === "string") {
+    const markdown = [
+      `# ${run.title}`,
+      "",
+      "*`FIELD LAB · " + run.kind + " · " + run.objective + "`*",
+      "",
+      content,
+    ].join("\n");
     return (
-      <p className="mt-4 max-h-80 overflow-y-auto whitespace-pre-wrap border-t border-foreground/10 pt-4 text-sm leading-relaxed text-muted-foreground">
-        {content}
-      </p>
+      <>
+        <ExportControls
+          run={run}
+          columns={[]}
+          rows={[]}
+          markdownOnly
+          markdownText={markdown}
+        />
+        <p className="mt-4 max-h-80 overflow-y-auto whitespace-pre-wrap border-t border-foreground/10 pt-4 text-sm leading-relaxed text-muted-foreground">
+          {content}
+        </p>
+      </>
     );
   }
 
   if (content && typeof content === "object") {
+    const rows = Object.entries(content as Record<string, unknown>).map(([field, value]) => ({ field, value }));
+    const columns = [
+      { key: "field", label: "Field" },
+      { key: "value", label: "Value" },
+    ];
     return (
-      <dl className="mt-4 space-y-2 border-t border-foreground/10 pt-4">
-        {Object.entries(content as Record<string, unknown>).map(([key, value]) => (
-          <div key={key} className="grid gap-1 sm:grid-cols-[minmax(0,10rem)_1fr] sm:gap-4">
-            <dt className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-              {key.replace(/_/g, " ")}
-            </dt>
-            <dd className="text-sm text-foreground/90">
-              {typeof value === "object" ? JSON.stringify(value) : String(value)}
-            </dd>
-          </div>
-        ))}
-      </dl>
+      <>
+        <ExportControls run={run} columns={columns} rows={rows} />
+        <dl className="mt-4 space-y-2 border-t border-foreground/10 pt-4">
+          {Object.entries(content as Record<string, unknown>).map(([key, value]) => (
+            <div key={key} className="grid gap-1 sm:grid-cols-[minmax(0,10rem)_1fr] sm:gap-4">
+              <dt className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                {key.replace(/_/g, " ")}
+              </dt>
+              <dd className="text-sm text-foreground/90">
+                {typeof value === "object" ? JSON.stringify(value) : String(value)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </>
     );
   }
 

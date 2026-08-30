@@ -6,8 +6,73 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import {
+  EXPORT_BUTTON_CLASS,
+  downloadText,
+  slugify,
+  toCsv,
+  toMarkdownTable,
+  type ExportColumn,
+} from "@/lib/export";
 import { apiRequest } from "@/lib/queryClient";
 import { approveOutreach, getGtmAgent, huntGtm, listGtmAgents, tameGtmAgent, type GtmActivity, type GtmAgent, type GtmLead, type GtmOutreach } from "@/lib/gtm";
+
+const LEAD_EXPORT_COLUMNS: ExportColumn[] = [
+  { key: "created_at", label: "Created at" },
+  { key: "company_name", label: "Company name" },
+  { key: "domain", label: "Domain" },
+  { key: "name", label: "Name" },
+  { key: "title", label: "Title" },
+  { key: "email", label: "Email" },
+  { key: "linkedin_url", label: "LinkedIn URL" },
+  { key: "verification_status", label: "Verification status" },
+];
+
+const OUTBOX_EXPORT_COLUMNS: ExportColumn[] = [
+  { key: "created_at", label: "Created at" },
+  { key: "status", label: "Status" },
+  { key: "channel", label: "Channel" },
+  { key: "to_address", label: "To" },
+  { key: "subject", label: "Subject" },
+  { key: "body", label: "Body" },
+  { key: "sent_at", label: "Sent at" },
+];
+
+function verificationStatus(value: unknown): string {
+  if (!value || typeof value !== "object") return value == null ? "" : String(value);
+  const record = value as Record<string, unknown>;
+  return String(record.status ?? record.safe ?? "");
+}
+
+function GtmExportControls({
+  filenameBase,
+  columns,
+  rows,
+}: {
+  filenameBase: string;
+  columns: ExportColumn[];
+  rows: Array<Record<string, unknown>>;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="flex gap-2">
+      <button
+        type="button"
+        className={EXPORT_BUTTON_CLASS}
+        onClick={() => downloadText(`${filenameBase}.csv`, "text/csv;charset=utf-8", toCsv(columns, rows))}
+      >
+        CSV
+      </button>
+      <button
+        type="button"
+        className={EXPORT_BUTTON_CLASS}
+        onClick={() => downloadText(`${filenameBase}.md`, "text/markdown;charset=utf-8", toMarkdownTable(columns, rows))}
+      >
+        MD
+      </button>
+    </div>
+  );
+}
 
 export default function GtmPage() {
   const { getToken, isSignedIn } = useAuth();
@@ -99,6 +164,26 @@ export default function GtmPage() {
   }
 
   if (selected) {
+    const agentName = selected.name || selected.icp.query || "agent";
+    const leadRows = leads.map((lead) => ({
+      created_at: lead.created_at,
+      company_name: lead.company_name,
+      domain: lead.domain,
+      name: lead.name,
+      title: lead.title,
+      email: lead.email,
+      linkedin_url: lead.linkedin_url,
+      verification_status: verificationStatus(lead.verification),
+    }));
+    const outboxRows = outreach.map((item) => ({
+      created_at: item.created_at,
+      status: item.status,
+      channel: item.channel,
+      to_address: item.to_address,
+      subject: item.subject,
+      body: item.body,
+      sent_at: item.sent_at,
+    }));
     return (
       <div className="min-h-screen bg-background text-foreground">
         <div className="max-w-[1400px] mx-auto px-6 lg:px-12 py-12 lg:py-20">
@@ -136,7 +221,14 @@ export default function GtmPage() {
 
             <div className="w-full lg:w-[420px] space-y-8">
               <div>
-                <h2 className="font-display text-2xl mb-4">Verified leads</h2>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h2 className="font-display text-2xl">Verified leads</h2>
+                  <GtmExportControls
+                    filenameBase={`gtm-${slugify(agentName)}-leads`}
+                    columns={LEAD_EXPORT_COLUMNS}
+                    rows={leadRows}
+                  />
+                </div>
                 <div className="border border-foreground/10 bg-foreground/[0.02] max-h-64 overflow-auto">
                   {leads.length === 0 && <p className="p-4 text-muted-foreground text-sm">No leads yet.</p>}
                   {leads.map((l) => (
@@ -150,7 +242,14 @@ export default function GtmPage() {
               </div>
 
               <div>
-                <h2 className="font-display text-2xl mb-4">Outbox</h2>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h2 className="font-display text-2xl">Outbox</h2>
+                  <GtmExportControls
+                    filenameBase={`gtm-${slugify(agentName)}-outbox`}
+                    columns={OUTBOX_EXPORT_COLUMNS}
+                    rows={outboxRows}
+                  />
+                </div>
                 <div className="max-h-80 overflow-auto border border-foreground/10 bg-foreground/[0.02]">
                   {outreach.length === 0 && <p className="p-4 text-muted-foreground text-sm">Nothing queued.</p>}
                   {outreach.map((o) => (

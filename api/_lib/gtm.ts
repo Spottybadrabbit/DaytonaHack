@@ -100,7 +100,9 @@ export function parseGtmLog(raw: string) {
   for (const line of raw.split("\n")) {
     const text = cleanLogLine(line);
     if (!text.startsWith("::gtm-")) continue;
-    const colon = text.indexOf(":");
+    // Markers look like `::gtm-<tag>:<json>` — the separator search must start
+    // past the `::gtm-` prefix or it matches the leading colon and the tag is "".
+    const colon = text.indexOf(":", 6);
     if (colon === -1) continue;
     const tag = text.slice(6, colon);
     let payload: Record<string, unknown> = {};
@@ -259,8 +261,14 @@ export async function pollAndIngest(agentState: GtmAgentRow): Promise<GtmAgentRo
     return { ...agentState, status: "error" };
   }
 
-  const parsed = parseGtmLog(raw);
+  const rawOffset = agentState.state.log_offset;
+  const offset = typeof rawOffset === "number" && rawOffset >= 0 ? rawOffset : 0;
+  const consumed = raw.slice(offset);
+  const completeLength = consumed.lastIndexOf("\n") + 1;
+  const nextLogOffset = offset + completeLength;
+  const parsed = parseGtmLog(consumed.slice(0, completeLength));
   const cycle = (agentState.state.cycle as number) || 0;
+  const nextState = { ...agentState.state, log_offset: nextLogOffset };
 
   for (const e of parsed.events) {
     await supabaseResponse("gtm_activity", {
@@ -292,7 +300,7 @@ export async function pollAndIngest(agentState: GtmAgentRow): Promise<GtmAgentRo
           title: l.title ? String(l.title) : null,
           email: l.email ? String(l.email).toLowerCase() : null,
           linkedin_url: l.linkedin_url ? String(l.linkedin_url) : null,
-          verification: l.verified ? { safe: true } : {},
+          verification: l.verification || (l.verified ? { safe: true } : {}),
           source_payload: l,
         }),
       });
@@ -314,7 +322,9 @@ export async function pollAndIngest(agentState: GtmAgentRow): Promise<GtmAgentRo
         to_address: o.to ? String(o.to) : "",
         subject: o.subject ? String(o.subject) : null,
         body: o.body ? String(o.body) : null,
-        status: o.status === "sent" ? "sent" : "draft",
+        status: ["draft", "approved", "sent", "failed", "replied"].includes(String(o.status))
+          ? o.status
+          : "draft",
         provider_ids: o.provider_result || {},
         sent_at: o.status === "sent" ? new Date().toISOString() : null,
       }),
@@ -322,22 +332,26 @@ export async function pollAndIngest(agentState: GtmAgentRow): Promise<GtmAgentRo
   }
 
   if (parsed.needsAuth) {
-    await updateGtmStatus(agentState.id, "error", { error_message: `Deepline needs browser authorization: ${parsed.needsAuth}` });
-    return { ...agentState, status: "error" };
+    await updateGtmStatus(agentState.id, "error", {
+      error_message: `Deepline needs browser authorization: ${parsed.needsAuth}`,
+      state: nextState,
+    });
+    return { ...agentState, status: "error", state: nextState };
   }
 
   if (parsed.error) {
-    await updateGtmStatus(agentState.id, "error", { error_message: parsed.error });
-    return { ...agentState, status: "error" };
+    await updateGtmStatus(agentState.id, "error", { error_message: parsed.error, state: nextState });
+    return { ...agentState, status: "error", state: nextState };
   }
 
   if (parsed.done) {
-    const nextState = { ...agentState.state, cycle: ((agentState.state.cycle as number) || 0) + 1 };
-    await updateGtmStatus(agentState.id, "idle", { state: nextState });
-    return { ...agentState, status: "idle", state: nextState };
+    const doneState = { ...nextState, cycle: ((agentState.state.cycle as number) || 0) + 1 };
+    await updateGtmStatus(agentState.id, "idle", { state: doneState });
+    return { ...agentState, status: "idle", state: doneState };
   }
 
-  return agentState;
+  await updateGtmStatus(agentState.id, agentState.status, { state: nextState });
+  return { ...agentState, state: nextState };
 }
 
 async function updateGtmStatus(id: string, status: GtmStatus, patch: Record<string, unknown>) {

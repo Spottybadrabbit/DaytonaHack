@@ -6,10 +6,13 @@ export interface GtmIcp {
   location?: string;
   employee_count?: string;
   roles?: string[];
+  search_tools?: string[];
+  contact_tools?: string[];
+  verify_tools?: string[];
   subject?: string;
   template?: string;
   limit?: number;
-  max_companies_per_cycle?: number;
+  max_leads_per_cycle?: number;
   contacts_per_company?: number;
   daily_email_cap?: number;
 }
@@ -17,6 +20,7 @@ export interface GtmIcp {
 export interface GtmAgent {
   id: string;
   agent_id: string;
+  name?: string;
   status: "idle" | "hunting" | "paused" | "error";
   mode: "draft" | "autosend";
   icp: GtmIcp;
@@ -29,16 +33,22 @@ export interface GtmLead {
   name: string | null;
   title: string | null;
   company_name: string | null;
+  domain: string | null;
   email: string | null;
+  linkedin_url: string | null;
+  verification: unknown;
   created_at: string;
 }
 
 export interface GtmOutreach {
   id: string;
+  channel: string;
   to_address: string;
   subject: string | null;
+  body: string | null;
   status: "draft" | "approved" | "sent" | "failed" | "replied";
   created_at: string;
+  sent_at: string | null;
 }
 
 export interface GtmActivity {
