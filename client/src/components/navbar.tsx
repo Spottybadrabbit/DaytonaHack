@@ -13,6 +13,7 @@ export default function Navbar() {
   const navLinks = [
     { href: "/", label: "Homepage" },
     { href: "/dashboard", label: "Dashboard" },
+    { href: "/chat", label: "Field Lab" },
     { href: "/marketplace", label: "Marketplace" },
   ];
 

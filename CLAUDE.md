@@ -83,9 +83,103 @@ NEVER use the word "Pokémon" or any Nintendo trademark in UI copy):
   `client/src/lib/plans.ts`. Server verification: `api/_lib/clerk.ts`.
 - Never commit `.env*` (gitignored; `.env.example` is the template). Dev server:
   `npm run dev` → port 3000 or next free (3000 often taken by another project).
-- Verify with `npm run check`, `npm run check:builder`, the separate `api/`
-  typecheck, and `npm run build` before pushing; pushes to `main` auto-deploy to
-  production via Vercel.
+- Verify with `npm run verify` (= `check` + `check:api` + `check:builder` +
+  `build`) before pushing; pushes to `main` auto-deploy to production via Vercel.
+
+## Field lab chat + specialist agents (`/chat`)
+
+Signed-in surface at `/chat` (`client/src/pages/chat.tsx`, wired in `App.tsx`
+behind `RequireAuth`, linked from the app Navbar as **Field Lab**). A Claude
+tool-calling loop picks a specialist, dispatches it as a background run, and the
+chat renders one polling run card per dispatch.
+
+### Flow map
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Researcher
+    participant UI as /chat
+    participant C as POST /api/chat
+    participant AN as Claude (claude-opus-5)
+    participant DB as Supabase agent_runs
+    participant P as Parallel API
+    participant DT as Daytona GTM sandbox
+    participant R as GET /api/runs/:id
+
+    U->>UI: "Find all UK VCs investing in Physical AI"
+    UI->>C: messages[] + Clerk bearer token
+    C->>C: requireUser -> syncClerkUser
+    C->>AN: messages + 4 tool definitions
+    AN-->>C: tool_use find_all { entity_type, match_conditions }
+    C->>C: Zod-validate the tool input (the model is not the gate)
+    C->>DB: insertRun(kind, provider, owner_id) -> run id
+    alt Parallel specialist
+        C->>P: taskRun.create | beta.findall.create
+        P-->>C: provider run id
+    else GTM specialist
+        C->>DT: create sandbox, upload gtm-runner.mjs + payload.json
+        C->>DT: executeSessionCommand(runAsync = true)
+        DT-->>C: sandboxId + sessionId + cmdId
+    end
+    C->>DB: patchRun(status = running, provider ids)
+    C->>AN: tool_result "dispatched, run <id>"
+    AN-->>C: short reply
+    C-->>UI: { reply, runs[] }
+
+    loop every 4s per card until terminal
+        UI->>R: GET /api/runs/:id
+        R->>DB: findOwnedRun -> 404 if missing OR not owned
+        R->>P: retrieve -> result when completed
+        R->>DT: getSessionCommandLogs -> ::deepline-result / ::deepline-auth
+        R->>DB: patchRun on terminal state; delete GTM sandbox
+        R-->>UI: { run }
+    end
+```
+
+### The four specialists
+
+| Tool | Provider | Returns | Notes |
+| --- | --- | --- | --- |
+| `deep_research` | Parallel Task API, `ultra` | Markdown report with inline citations | Minutes; can reach 45 |
+| `find_all` | Parallel FindAll, `core` | Candidate roster with per-condition verdicts | **the VC agent** |
+| `enrich_records` | Parallel Task API, `core` | JSON record, one researched field each | Schema built from the tool input |
+| `gtm_find_contact` | Deepline CLI in a Daytona sandbox | Verified GTM contact data | Needs one-time browser auth |
+
+### Two sandbox trust tiers — keep them apart
+
+- **Site builder** (`api/builder/build.ts`): Claude Code, file tools only, no
+  shell, serves a public preview port. Never widen `allowedTools`.
+- **GTM runner** (`api/_lib/deepline.ts`): needs a shell to drive the `deepline`
+  CLI, so it gets **no Claude**, **no public port**, and is deleted as soon as it
+  answers. The tool name and payload are uploaded as `payload.json` and passed to
+  `execFile` as an **argv array** — never a shell string.
+
+`npm run check:builder` gates both runners. It asserts the site runner's tool
+list and the GTM runner's argv-not-shell invariant, and parses both with esbuild.
+
+### Every sandbox spins up with Parallel
+
+`api/builder/build.ts` upserts a host-scoped `agents_wild_parallel` Daytona
+secret, injects `PARALLEL_API_KEY`, adds `api.parallel.ai` to the
+`domainAllowList`, and installs `parallel-web` alongside the agent SDK — so a
+generated app can do its own research. Optional: without `PARALLEL_API_KEY` the
+build still succeeds, just without Parallel.
+
+### Engineering notes
+
+- `agent_runs` (migration `20260830140000_agent_runs.sql`) carries the provider
+  correlation ids (`provider_run_id`, `sandbox_id`, `session_id`, `command_id`).
+  They are **owner-only** — `toRunView` strips them, so a run survives navigation
+  and a cold function without ever exposing sandbox identifiers.
+- `findOwnedRun` returns the same `null` for missing and not-owned, so run ids
+  cannot be probed. `/api/runs/:id` 404s identically for a malformed uuid.
+- `npm run check:api` (new, `tsconfig.api.json`) typechecks `api/` with
+  `moduleResolution: NodeNext`, which is what actually catches a missing `.js`
+  extension on a relative import before Vercel does at runtime.
+- Claude config in `api/chat.ts`: `claude-opus-5`, `thinking: { type: "adaptive" }`,
+  no `temperature`, `max_tokens: 8000`, `MAX_TOOL_ROUNDS = 4`,
+  `MAX_RUNS_PER_TURN = 3`.
 
 <!-- convex-ai-start -->
 

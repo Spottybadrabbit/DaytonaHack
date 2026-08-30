@@ -114,6 +114,14 @@ export function toWildAgent(row: AgentRow): WildAgent {
   };
 }
 
+interface ClerkUser {
+  email_addresses?: Array<{ id: string; email_address: string }>;
+  primary_email_address_id?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  image_url?: string | null;
+}
+
 export async function syncClerkUser(userId: string) {
   const secretKey = process.env.CLERK_SECRET_KEY;
   if (!secretKey) throw new Error("Clerk is not configured.");
@@ -121,7 +129,7 @@ export async function syncClerkUser(userId: string) {
     headers: { Authorization: `Bearer ${secretKey}` },
   });
   if (!response.ok) throw new Error("Could not sync the signed-in user.");
-  const user = await response.json();
+  const user = (await response.json()) as ClerkUser;
   const email = user.email_addresses?.find(
     (item: { id: string }) => item.id === user.primary_email_address_id,
   )?.email_address ?? user.email_addresses?.[0]?.email_address;

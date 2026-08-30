@@ -1,0 +1,19 @@
+{
+  "include": ["api/**/*", "shared/**/*"],
+  "exclude": ["node_modules", "dist"],
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "NodeNext",
+    "target": "ES2022",
+    "strict": true,
+    "lib": ["ES2022"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    // api/ ships as ESM on Vercel, so relative imports must resolve with the
+    // mandatory .js extension — NodeNext is what enforces that at typecheck time.
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": { "@shared/*": ["./shared/*"] }
+  }
+}

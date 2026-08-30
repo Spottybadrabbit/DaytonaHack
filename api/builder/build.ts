@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Daytona } from "@daytona/sdk";
 import { z } from "zod";
 import { requireUser } from "../_lib/clerk.js";
+import { PARALLEL_HOSTS } from "../_lib/parallel.js";
 import {
   agentSelect,
   supabaseJson,
@@ -18,6 +19,7 @@ const requestSchema = z.object({
 });
 
 const SECRET_NAME = "agents_wild_anthropic";
+const PARALLEL_SECRET_NAME = "agents_wild_parallel";
 const BUILD_DIR = "/tmp/agents-wild-builder";
 
 export function runnerSource(readyMarker: string) {
@@ -99,6 +101,25 @@ createServer(async (request, response) => {
 `;
 }
 
+/** Creates or rotates a named Daytona secret, pinned to the hosts that may receive it. */
+async function upsertSecret(
+  daytona: Daytona,
+  input: { name: string; value: string; description: string; hosts: string[] },
+): Promise<void> {
+  const existing = await daytona.secret.list({ name: input.name, limit: 10 });
+  const match = existing.items.find((secret) => secret.name === input.name);
+  if (match) {
+    await daytona.secret.update(match.id, { value: input.value, hosts: input.hosts });
+    return;
+  }
+  await daytona.secret.create({
+    name: input.name,
+    value: input.value,
+    description: input.description,
+    hosts: input.hosts,
+  });
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -112,6 +133,8 @@ export default async function handler(req: any, res: any) {
 
   const daytonaKey = process.env.DAYTONA_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  // Optional: the build still succeeds without it, the sandbox just has no Parallel.
+  const parallelKey = process.env.PARALLEL_API_KEY;
   if (!daytonaKey || !anthropicKey) {
     return res.status(503).json({
       error: `Builder is missing ${[!daytonaKey && "DAYTONA_API_KEY", !anthropicKey && "ANTHROPIC_API_KEY"].filter(Boolean).join(" and ")}.`,
@@ -152,19 +175,20 @@ export default async function handler(req: any, res: any) {
     if (!projectId) throw new Error("Supabase did not create the Builder Bros project.");
 
     const daytona = new Daytona({ apiKey: daytonaKey, requestTimeoutMs: 90_000 });
-    const secrets = await daytona.secret.list({ name: SECRET_NAME, limit: 10 });
-    const existingSecret = secrets.items.find((secret) => secret.name === SECRET_NAME);
-    if (existingSecret) {
-      await daytona.secret.update(existingSecret.id, {
-        value: anthropicKey,
-        hosts: ["api.anthropic.com"],
-      });
-    } else {
-      await daytona.secret.create({
-        name: SECRET_NAME,
-        value: anthropicKey,
-        description: "Claude key for Agents in the Wild builds",
-        hosts: ["api.anthropic.com"],
+    await upsertSecret(daytona, {
+      name: SECRET_NAME,
+      value: anthropicKey,
+      description: "Claude key for Agents in the Wild builds",
+      hosts: ["api.anthropic.com"],
+    });
+    // Every sandbox spins up with Parallel available, so a generated app can do
+    // its own web research and enrichment without a second provisioning step.
+    if (parallelKey) {
+      await upsertSecret(daytona, {
+        name: PARALLEL_SECRET_NAME,
+        value: parallelKey,
+        description: "Parallel key for Agents in the Wild sandboxes",
+        hosts: PARALLEL_HOSTS.split(","),
       });
     }
 
@@ -174,8 +198,10 @@ export default async function handler(req: any, res: any) {
       language: "typescript",
       public: true,
       labels: { app: "agents-in-the-wild", agent: agentId },
-      secrets: { ANTHROPIC_API_KEY: SECRET_NAME },
-      domainAllowList: "registry.npmjs.org,*.npmjs.org,api.anthropic.com,*.anthropic.com",
+      secrets: parallelKey
+        ? { ANTHROPIC_API_KEY: SECRET_NAME, PARALLEL_API_KEY: PARALLEL_SECRET_NAME }
+        : { ANTHROPIC_API_KEY: SECRET_NAME },
+      domainAllowList: `registry.npmjs.org,*.npmjs.org,api.anthropic.com,*.anthropic.com,${PARALLEL_HOSTS}`,
       autoStopInterval: 180,
       autoArchiveInterval: 1_440,
       autoDeleteInterval: 4_320,
@@ -207,7 +233,7 @@ export default async function handler(req: any, res: any) {
     await sandbox.fs.uploadFile(Buffer.from(runnerSource(readyMarker), "utf8"), `${BUILD_DIR}/runner.mjs`);
     await sandbox.process.createSession(sessionId);
     const command = await sandbox.process.executeSessionCommand(sessionId, {
-      command: `cd ${BUILD_DIR} && npm install --no-audit --no-fund --no-save @anthropic-ai/claude-agent-sdk@0.3.246 && node runner.mjs`,
+      command: `cd ${BUILD_DIR} && npm install --no-audit --no-fund --no-save @anthropic-ai/claude-agent-sdk@0.3.246 parallel-web@1.3.2 && node runner.mjs`,
       runAsync: true,
       suppressInputEcho: true,
     });
