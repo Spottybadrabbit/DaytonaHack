@@ -10,6 +10,7 @@ import AgentDetails from "@/pages/agent-details";
 import Dashboard from "@/pages/dashboard";
 import CreateAgent from "@/pages/create-agent";
 import Chat from "@/pages/chat";
+import Gtm from "@/pages/gtm";
 import Marketplace from "@/pages/apify-actors"; // Renaming apify-actors to Marketplace
 import Pricing from "@/pages/pricing";
 import Checkout from "@/pages/checkout";
@@ -77,6 +78,11 @@ function Router() {
         <Route path="/chat">
           <RequireAuth>
             <Chat />
+          </RequireAuth>
+        </Route>
+        <Route path="/gtm">
+          <RequireAuth>
+            <Gtm />
           </RequireAuth>
         </Route>
         <Route path="/marketplace" component={Marketplace} />
