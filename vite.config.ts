@@ -8,7 +8,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "");
-  const useLocalClerk = !env.VITE_CLERK_PUBLISHABLE_KEY;
+  // loadEnv only reads .env files. On Vercel the dashboard vars arrive through
+  // process.env, so both sources have to be consulted or a deployed build
+  // silently swaps in the local Clerk stub (whose getToken() returns null).
+  const clerkPublishableKey =
+    env.VITE_CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY;
+  if (process.env.VERCEL && !clerkPublishableKey) {
+    throw new Error("VITE_CLERK_PUBLISHABLE_KEY is required for Vercel builds.");
+  }
+  const useLocalClerk = !clerkPublishableKey;
   const clerkShim = path.resolve(__dirname, "client", "src", "lib", "clerk-local.tsx");
 
   return {
