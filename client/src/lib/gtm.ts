@@ -20,7 +20,8 @@ export interface GtmIcp {
 export interface GtmAgent {
   id: string;
   agent_id: string;
-  name?: string;
+  name: string | null;
+  description: string | null;
   status: "idle" | "hunting" | "paused" | "error";
   mode: "draft" | "autosend";
   icp: GtmIcp;

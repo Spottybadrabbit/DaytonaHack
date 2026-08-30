@@ -21,6 +21,8 @@ export interface GtmAgentRow {
   icp: Record<string, unknown>;
   limits: Record<string, unknown>;
   state: Record<string, unknown>;
+  name?: string | null;
+  description?: string | null;
   sandbox_id?: string;
   session_id?: string;
   command_id?: string;
@@ -72,6 +74,57 @@ export interface GtmActivityRow {
   meta: unknown;
   elapsed_ms: number | null;
   created_at: string;
+}
+
+interface EmbeddedGtmAgentRow extends GtmAgentRow {
+  agents?: { name: string | null; description: string | null } | Array<{ name: string | null; description: string | null }> | null;
+}
+
+function agentDetails(row: EmbeddedGtmAgentRow): GtmAgentRow {
+  const embedded = Array.isArray(row.agents) ? row.agents[0] : row.agents;
+  const agent = { ...row };
+  delete agent.agents;
+  return {
+    ...agent,
+    name: embedded?.name ?? null,
+    description: embedded?.description ?? null,
+  };
+}
+
+export function toGtmAgentView(agent: GtmAgentRow) {
+  const {
+    sandbox_id: _sandboxId,
+    session_id: _sessionId,
+    command_id: _commandId,
+    ...view
+  } = agent;
+  return view;
+}
+
+async function gtmAgentsQuery(filter: string): Promise<GtmAgentRow[]> {
+  let rows: EmbeddedGtmAgentRow[];
+  try {
+    rows = await supabaseJson<EmbeddedGtmAgentRow[]>(
+      `gtm_agent_state?select=*,agents(name,description)${filter}`,
+    );
+  } catch {
+    rows = await supabaseJson<EmbeddedGtmAgentRow[]>(
+      `gtm_agent_state?select=*${filter}`,
+    );
+  }
+
+  const missing = rows
+    .filter((row) => !row.agents || (Array.isArray(row.agents) && row.agents.length === 0))
+    .map((row) => row.agent_id);
+  if (missing.length > 0) {
+    const agents = await supabaseJson<Array<{ id: string; name: string | null; description: string | null }>>(
+      `agents?select=id,name,description&id=in.(${missing.join(",")})`,
+    );
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    rows = rows.map((row) => row.agents ? row : { ...row, agents: byId.get(row.agent_id) ?? null });
+  }
+
+  return rows.map(agentDetails);
 }
 
 function daytona(): Daytona {
@@ -152,7 +205,10 @@ async function uploadConfig(
   await sandbox.fs.uploadFile(Buffer.from(gtmAgentSource(), "utf8"), `${GTM_DIR}/${GTM_AGENT}`);
 }
 
-export async function createGtmSandbox(agentState: GtmAgentRow, approvedDrafts: unknown[] = []): Promise<{ sandboxId: string; sessionId: string; commandId: string }> {
+export async function createGtmSandbox(
+  agentState: GtmAgentRow,
+  approvedDrafts: unknown[] = [],
+): Promise<{ sandboxId: string; sessionId: string; commandId: string; state: Record<string, unknown> }> {
   const client = daytona();
   const sandbox = await client.create(
     {
@@ -175,9 +231,10 @@ export async function createGtmSandbox(agentState: GtmAgentRow, approvedDrafts: 
   await sandbox.process.createSession(sessionId);
 
   const suppression = { emails: [] as string[], domains: [] as string[] };
+  const nextState = { ...agentState.state, log_offset: 0 };
   await uploadConfig(
     sandbox,
-    { ...agentState.state, agentId: agentState.agent_id, mode: agentState.mode },
+    { ...nextState, agentId: agentState.agent_id, mode: agentState.mode },
     agentState.icp,
     suppression,
     approvedDrafts,
@@ -197,17 +254,18 @@ export async function createGtmSandbox(agentState: GtmAgentRow, approvedDrafts: 
       session_id: sessionId,
       command_id: cmd.cmdId,
       status: "hunting",
+      state: nextState,
       updated_at: new Date().toISOString(),
     }),
   });
 
-  return { sandboxId: sandbox.id, sessionId, commandId: cmd.cmdId };
+  return { sandboxId: sandbox.id, sessionId, commandId: cmd.cmdId, state: nextState };
 }
 
 export async function resumeGtmCycle(
   agentState: GtmAgentRow,
   approvedDrafts: unknown[] = [],
-): Promise<{ sandboxId: string; sessionId: string; commandId: string }> {
+): Promise<{ sandboxId: string; sessionId: string; commandId: string; state: Record<string, unknown> }> {
   if (!agentState.sandbox_id) return createGtmSandbox(agentState, approvedDrafts);
 
   const client = daytona();
@@ -215,9 +273,10 @@ export async function resumeGtmCycle(
     const sandbox = await client.get(agentState.sandbox_id);
     const sessionId = agentState.session_id || `gtm-${agentState.agent_id.slice(0, 8)}`;
 
+    const nextState = { ...agentState.state, log_offset: 0 };
     await uploadConfig(
       sandbox,
-      { ...agentState.state, agentId: agentState.agent_id, mode: agentState.mode },
+      { ...nextState, agentId: agentState.agent_id, mode: agentState.mode },
       agentState.icp,
       { emails: [], domains: [] },
       approvedDrafts,
@@ -236,11 +295,12 @@ export async function resumeGtmCycle(
         command_id: cmd.cmdId,
         session_id: sessionId,
         status: "hunting",
+        state: nextState,
         updated_at: new Date().toISOString(),
       }),
     });
 
-    return { sandboxId: sandbox.id, sessionId, commandId: cmd.cmdId };
+    return { sandboxId: sandbox.id, sessionId, commandId: cmd.cmdId, state: nextState };
   } catch {
     // Sandbox gone; recreate.
     return createGtmSandbox(agentState, approvedDrafts);
@@ -366,28 +426,28 @@ async function updateGtmStatus(id: string, status: GtmStatus, patch: Record<stri
 }
 
 export async function loadGtmAgent(id: string, ownerId: string): Promise<GtmAgentRow | null> {
-  const rows = await supabaseJson<GtmAgentRow[]>(
-    `gtm_agent_state?select=*&id=eq.${encodeURIComponent(id)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
+  const rows = await gtmAgentsQuery(
+    `&id=eq.${encodeURIComponent(id)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
   );
   return rows[0] ?? null;
 }
 
 export async function findOwnedGtmAgentByAgentId(agentId: string, ownerId: string): Promise<GtmAgentRow | null> {
-  const rows = await supabaseJson<GtmAgentRow[]>(
-    `gtm_agent_state?select=*&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
+  const rows = await gtmAgentsQuery(
+    `&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
   );
   return rows[0] ?? null;
 }
 
 export async function listGtmAgents(ownerId: string): Promise<GtmAgentRow[]> {
-  return supabaseJson<GtmAgentRow[]>(
-    `gtm_agent_state?select=*&owner_id=eq.${encodeURIComponent(ownerId)}&order=updated_at.desc`,
+  return gtmAgentsQuery(
+    `&owner_id=eq.${encodeURIComponent(ownerId)}&order=updated_at.desc`,
   );
 }
 
 export async function listActiveGtmAgents(): Promise<GtmAgentRow[]> {
-  return supabaseJson<GtmAgentRow[]>(
-    `gtm_agent_state?select=*&status=in.("hunting","idle")&order=updated_at.desc`,
+  return gtmAgentsQuery(
+    `&status=in.("hunting","idle")&order=updated_at.desc`,
   );
 }
 

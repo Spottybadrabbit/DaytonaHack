@@ -7,6 +7,7 @@ import {
   resumeGtmCycle,
   collectApprovedOutreach,
   pollAndIngest,
+  toGtmAgentView,
 } from "../_lib/gtm.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -31,7 +32,7 @@ export default async function handler(req: any, res: any) {
         listGtmOutreach(id, user.userId),
         listGtmActivity(id, user.userId, 50),
       ]);
-      return res.status(200).json({ agent, leads, outreach, activity });
+      return res.status(200).json({ agent: toGtmAgentView(agent), leads, outreach, activity });
     }
 
     if (req.method === "POST") {
@@ -39,12 +40,18 @@ export default async function handler(req: any, res: any) {
       if (action === "hunt") {
         if (agent.status === "hunting") return res.status(409).json({ error: "Already hunting." });
         const approved = await collectApprovedOutreach(id, user.userId);
-        const launch = await resumeGtmCycle({ ...agent, state: { ...agent.state, agentId: agent.agent_id } }, approved);
-        return res.status(200).json({ started: true, agent: { ...agent, status: "hunting", ...launch } });
+        await resumeGtmCycle({ ...agent, state: { ...agent.state, agentId: agent.agent_id } }, approved);
+        return res.status(200).json({
+          started: true,
+          agent: {
+            ...toGtmAgentView(agent),
+            status: "hunting",
+          },
+        });
       }
       if (action === "poll") {
         const updated = await pollAndIngest(agent);
-        return res.status(200).json({ agent: updated });
+        return res.status(200).json({ agent: toGtmAgentView(updated) });
       }
       return res.status(400).json({ error: "Unknown action" });
     }

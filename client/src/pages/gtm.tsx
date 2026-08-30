@@ -193,11 +193,13 @@ export default function GtmPage() {
           <Eyebrow>Sandboxed agent</Eyebrow>
           <div className="flex flex-col lg:flex-row gap-8 lg:gap-12 mt-2">
             <div className="flex-1">
-              <h1 className="font-display text-4xl lg:text-6xl mb-4">{selected.icp.query || "Untitled agent"}</h1>
-              <p className="text-muted-foreground mb-8 max-w-2xl">
-                Status: <span className="font-mono text-xs uppercase tracking-widest">{selected.status}</span>
+              <h1 className="font-display text-4xl lg:text-6xl mb-4">{selected.name || "Untitled strategy"}</h1>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground mb-8 max-w-2xl">
+                ICP · {selected.icp.query || selected.icp.industry || "Untitled brief"}
                 <span className="mx-3 text-foreground/20">|</span>
-                Mode: <span className="font-mono text-xs uppercase tracking-widest">{selected.mode}</span>
+                Mode · {selected.mode}
+                <span className="mx-3 text-foreground/20">|</span>
+                Status · {selected.status}
               </p>
               <Button onClick={handleHunt} disabled={selected.status === "hunting"} className="bg-foreground text-background hover:bg-foreground/90 rounded-none mb-12">
                 {selected.status === "hunting" ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
@@ -326,10 +328,12 @@ export default function GtmPage() {
                   className="w-full text-left border border-foreground/10 hover:border-foreground/30 bg-foreground/[0.02] p-4 transition-colors"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-display text-xl">{a.icp.query || "Untitled"}</span>
+                    <span className="font-display text-xl">{a.name || "Untitled strategy"}</span>
                     <span className={`font-mono text-xs uppercase ${a.status === "hunting" ? "text-[#eca8d6]" : "text-muted-foreground"}`}>{a.status}</span>
                   </div>
-                  <div className="text-muted-foreground text-xs mt-1 font-mono uppercase tracking-widest">{a.mode}</div>
+                  <div className="text-muted-foreground text-[10px] mt-1 font-mono uppercase tracking-widest">
+                    {a.icp.query || a.icp.industry || "Untitled brief"} · {a.mode}
+                  </div>
                 </button>
               ))}
             </div>

@@ -1,5 +1,5 @@
 import { requireUser } from "../_lib/clerk.js";
-import { listGtmAgents } from "../_lib/gtm.js";
+import { listGtmAgents, toGtmAgentView } from "../_lib/gtm.js";
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "GET") {
@@ -11,7 +11,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     const agents = await listGtmAgents(user.userId);
-    return res.status(200).json({ agents });
+    return res.status(200).json({ agents: agents.map(toGtmAgentView) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "list failed";
     return res.status(502).json({ error: message });

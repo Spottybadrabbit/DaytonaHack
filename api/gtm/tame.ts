@@ -81,7 +81,7 @@ export default async function handler(req: any, res: any) {
     const gtmState = gtmRes[0];
     if (!gtmState) throw new Error("Supabase did not create the GTM state.");
 
-    const row = await createGtmSandbox({
+    await createGtmSandbox({
       id: gtmState.id,
       agent_id: agentRow.id,
       owner_id: user.userId,
@@ -94,7 +94,7 @@ export default async function handler(req: any, res: any) {
       updated_at: new Date().toISOString(),
     });
 
-    return res.status(200).json({ agent: { id: agentRow.id, name: body.name }, gtm: row });
+    return res.status(200).json({ agent: { id: agentRow.id, name: body.name } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to tame GTM agent";
     console.error(`[gtm/tame] ${message}`);
