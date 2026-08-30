@@ -5,7 +5,11 @@ export const config = { maxDuration: 300 };
 export default async function handler(req: any, res: any) {
   const secret = process.env.GTM_TICK_SECRET;
   const provided = req.headers["x-gtm-tick-secret"] || req.query?.secret;
-  if (secret && provided !== secret) {
+  const authorization = req.headers.authorization;
+  const manualAuthorized = Boolean(secret && provided === secret);
+  const cronSecret = process.env.CRON_SECRET;
+  const cronAuthorized = Boolean(cronSecret && authorization === `Bearer ${cronSecret}`);
+  if (secret && !manualAuthorized && !cronAuthorized) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 

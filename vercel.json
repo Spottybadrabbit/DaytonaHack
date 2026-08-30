@@ -8,6 +8,6 @@
     { "source": "/((?!api/|assets/).*)", "destination": "/index.html" }
   ],
   "crons": [
-    { "path": "/api/gtm/tick?secret=${GTM_TICK_SECRET}", "schedule": "*/5 * * * *" }
+    { "path": "/api/gtm/tick", "schedule": "*/5 * * * *" }
   ]
 }
