@@ -193,7 +193,7 @@ export default function Crm() {
     const needle = search.trim().toLowerCase();
     return leads
       .filter((lead) => !needle || searchText(lead).includes(needle))
-      .filter((lead) => strategyFilter === "all" || lead.strategyName === strategyFilter)
+      .filter((lead) => strategyFilter === "all" || lead.strategyId === strategyFilter)
       .filter((lead) => verificationFilter === "all"
         || (verificationFilter === "verified" ? isVerified(lead) : !isVerified(lead)))
       .filter((lead) => {
@@ -301,7 +301,7 @@ export default function Crm() {
               >
                 <option value="all">All strategies</option>
                 {strategies.map((strategy) => (
-                  <option key={strategy.agent_id} value={strategy.name || "Untitled strategy"}>
+                  <option key={strategy.agent_id} value={strategy.agent_id}>
                     {strategy.name || "Untitled strategy"}
                   </option>
                 ))}
