@@ -5,6 +5,7 @@ import {
   supabaseResponse,
 } from "./supabase.js";
 import { GTM_DIR, GTM_AGENT, GTM_STATE, GTM_ICP, GTM_SUPPRESSION, GTM_SEND_QUEUE, gtmAgentSource } from "./gtm-runner.js";
+import { notifyLead } from "./notify.js";
 
 const PARALLEL_HOSTS = "api.parallel.ai,*.parallel.ai";
 const DEEPLINE_HOSTS = "deepline.com,*.deepline.com,code.deepline.com,registry.npmjs.org,*.npmjs.org";
@@ -295,6 +296,7 @@ export async function pollAndIngest(agentState: GtmAgentRow): Promise<GtmAgentRo
           source_payload: l,
         }),
       });
+      void notifyLead(l);
     } catch {
       // dedupe unique(email) may collide; ignore.
     }
