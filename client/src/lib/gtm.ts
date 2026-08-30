@@ -43,6 +43,7 @@ export interface GtmLead {
 
 export interface GtmOutreach {
   id: string;
+  lead_id: string | null;
   channel: string;
   to_address: string;
   subject: string | null;

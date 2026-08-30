@@ -11,6 +11,7 @@ import Dashboard from "@/pages/dashboard";
 import CreateAgent from "@/pages/create-agent";
 import Chat from "@/pages/chat";
 import Gtm from "@/pages/gtm";
+import Crm from "@/pages/crm";
 import MarketplaceWorld from "@/pages/marketplace-world";
 import Pricing from "@/pages/pricing";
 import Checkout from "@/pages/checkout";
@@ -84,6 +85,11 @@ function Router() {
         <Route path="/gtm">
           <RequireAuth>
             <Gtm />
+          </RequireAuth>
+        </Route>
+        <Route path="/crm">
+          <RequireAuth>
+            <Crm />
           </RequireAuth>
         </Route>
         <Route path="/marketplace" component={MarketplaceWorld} />
