@@ -1,99 +1,210 @@
-# Agents in the Wild — Prompt to Public Agent
+# Agents in the Wild
 
-Describe an app in plain English; Claude Code builds it inside an isolated Daytona
-sandbox, and Agents in the Wild publishes a live, shareable preview while Builder
-Bros tracks it in Supabase.
+<p align="center">
+  <img src="generated-icon.png" alt="Agents in the Wild Logo" width="200"/>
+</p>
 
-Built for the Daytona hackathon from `hackathon-prd.md`.
+<h2 align="center">Agents in the Wild</h2>
 
----
+<p align="center">
+  <a href="#features">🤖 Features</a> | 
+  <a href="#installation">📦 Installation</a> | 
+  <a href="#getting-started">🚀 Getting Started</a> | 
+  <a href="#api-integration">🔌 API Integration</a> | 
+  <a href="#database-setup">💾 Database</a> | 
+  <a href="#authentication">🔐 Authentication</a>
+</p>
 
-## Demo story
+<p align="center">
+  <img src="https://img.shields.io/badge/React-18-blue" alt="React 18"/>
+  <img src="https://img.shields.io/badge/Express-4-green" alt="Express 4"/>
+  <img src="https://img.shields.io/badge/PostgreSQL-15-blue" alt="PostgreSQL 15"/>
+  <img src="https://img.shields.io/badge/Apify-SDK-orange" alt="Apify SDK"/>
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"/>
+</p>
 
-1. Sign in and open **Raise something wild**.
-2. Name a Development agent and describe the app it should build.
-3. Release it. The UI shows real build logs while Daytona runs Claude in the background.
-4. The agent moves from `building` to `published` while the UI polls the authenticated build-status endpoint.
-5. Open the generated app from its agent card and share the public preview URL.
+Agents in the Wild is a cutting-edge platform for data retrieval and dynamic agent configuration, with advanced API integration capabilities. This platform connects you with intelligent agents ready to perform tasks and generate value independently.
 
-## Run it
+## Features
+
+- **🤖 Agent Marketplace**: Browse, create, and manage AI agents for various tasks
+- **📊 Data Scraping**: Advanced web data extraction and scraping capabilities
+- **💵 Wallet System**: Comprehensive payment and credits management
+- **🔍 Real-time API Exploration**: Test and configure API endpoints directly in the interface
+- **📱 Responsive UI**: Modern interface built with shadcn/UI and Tailwind CSS
+- **🔒 Authentication**: Secure user authentication and session management
+- **💾 PostgreSQL Database**: Persistent data storage with Drizzle ORM
+
+## Installation
+
+### Prerequisites
+
+- Node.js >= 16
+- PostgreSQL >= 15
+- Git
+
+### Local Development Setup
+
+1. **Clone the repository**
+
+```bash
+git clone https://github.com/yourusername/agents-in-the-wild.git
+cd agents-in-the-wild
+```
+
+2. **Install dependencies**
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173
 ```
 
-With no environment variables set the app runs in **field-lab mode**: a local
-session, an in-memory roster, and a simulated build that walks the same state
-machine as a real one. Copy `.env.example` to `.env` and fill in Clerk, Supabase,
-Daytona, and Anthropic keys to run the real thing.
+3. **Configure environment variables**
 
-## Architecture
+Create a `.env` file in the root directory with the following variables:
 
-```text
-Agents UI
-  -> Clerk bearer token
-  -> Vercel /api/builder/build
-  -> owner check against Builder Bros Supabase
-  -> Daytona sandbox + background session command
-  -> Claude Agent SDK writes a static site
-  -> /api/builder/status polls the command logs
-  -> Supabase patches building/published/error
-  -> dashboard, marketplace, and detail UI update
+```
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/agents_db
+
+# Server
+PORT=5000
+
+# Session
+SESSION_SECRET=your_session_secret
+
+# Optional: Apify API Token (needed for live data)
+APIFY_API_TOKEN=your_apify_token
 ```
 
-| Path | Purpose |
-| --- | --- |
-| `src/` | The only frontend: landing, marketplace, field lab, dashboard, agent detail |
-| `api/builder/build.ts` | Verifies the caller, validates the brief, creates the sandbox, returns `202` |
-| `api/builder/status.ts` | Owner-only log polling; patches Supabase on terminal states |
-| `api/agents/` | Public marketplace projection and the owner roster |
-| `api/_lib/runner.ts` | The fixed script uploaded into the sandbox |
-| `api/_lib/daytona.ts` | Daytona SDK client plus the field-lab simulator |
-| `api/_lib/store.ts` | Supabase (PostgREST) driver plus the in-memory fallback |
-| `supabase/schema.sql` | The `agents` table, indexes, and the public view |
+## Database Setup
 
-## Security model
-
-- **Auth first.** Every builder route calls `requirePrincipal` before Supabase or
-  Daytona is touched. `findOwnedAgent` returns the same `404` for a missing row and
-  a row owned by someone else, so ids cannot be probed.
-- **Input stays data.** The brief is written to `brief.json` and read back with
-  `JSON.parse`. `RUNNER_SOURCE` and `BUILD_COMMAND` are fixed constants with no
-  interpolation, so a brief can never become shell arguments or JavaScript source.
-- **File tools only.** The sandbox agent gets `Read`, `Write`, `Edit`, `Glob`, and
-  `Grep`. `Bash`, `WebFetch`, `WebSearch`, `Task`, and `NotebookEdit` are explicitly
-  denied, and the output must be a static site.
-- **Credentials stay server-side.** Daytona, Anthropic, and the Supabase service-role
-  key are read only in `api/_lib/env.ts`. No preview token or API credential is
-  stored on a public record or returned to the browser.
-- **Short-lived sandboxes.** Only the preview port is public; the sandbox auto-stops
-  after 30 minutes and auto-deletes after 60.
-
-## Checks
+1. **Create PostgreSQL database**
 
 ```bash
-npm run check          # frontend typecheck
-npm run check:api      # separate api/ typecheck
-npm run check:builder  # 40 builder security invariants
-npm run build          # production build
-npm run smoke          # end-to-end API flow against a live dev server
-npm run verify         # all of the above, in order
+createdb agents_db
 ```
 
-`check:builder` is the gate that enforces the security model above — it parses the
-generated runner, asserts the denied tool list, checks that authentication precedes
-every Daytona and Supabase call, and confirms the public projection omits
-`owner_id`, `sandbox_id`, `command_id`, and `error_message`.
+2. **Push schema to database**
 
-`smoke` walks the real demo story: anonymous requests are rejected, an over-long
-brief is rejected, a release returns `202` before the build finishes, another
-signed-in user cannot read the build, the status endpoint reaches `published`, and
-the public record carries no owner or sandbox metadata.
+```bash
+npm run db:push
+```
 
-## Demo ceiling
+This will create all necessary tables using Drizzle ORM migrations.
 
-This release generates static browser apps and publishes Daytona previews. It does
-not create a GitHub repository or Vercel project per generated app — durable
-per-app export waits until ownership, quotas, domain lifecycle, and cleanup policy
-are defined.
+## Getting Started
+
+1. **Start the development server**
+
+```bash
+npm run dev
+```
+
+This will start both the Express backend server and the React frontend development server.
+
+2. **Access the application**
+
+Open your browser and navigate to:
+```
+http://localhost:5000
+```
+
+## Project Structure
+
+```
+agents-in-the-wild/
+├── client/                # Frontend code (React)
+│   ├── src/
+│   │   ├── components/    # UI components
+│   │   ├── hooks/         # Custom React hooks
+│   │   ├── lib/           # Utilities and helpers
+│   │   ├── pages/         # Page components
+│   │   └── main.tsx       # Main entry point
+├── server/                # Backend code (Express)
+│   ├── routes.ts          # API routes
+│   ├── storage.ts         # Data storage interface
+│   ├── auth.ts            # Authentication logic
+│   ├── db.ts              # Database connection
+│   └── index.ts           # Server entry point
+├── shared/                # Shared code
+│   └── schema.ts          # Database schema
+└── package.json           # Project dependencies
+```
+
+## API Integration
+
+### Using the Apify Integration
+
+The application has built-in integration with the Apify platform, which is used to fetch and process data from various sources across the web.
+
+1. **Obtain an Apify API token**
+
+Sign up at [Apify](https://apify.com) and get your API token from your account settings.
+
+2. **Configure the token**
+
+Add your Apify API token to the `.env` file:
+
+```
+APIFY_API_TOKEN=your_apify_token
+```
+
+3. **Create an Agent**
+
+Navigate to the "Create Agent" page in the application and:
+- Enter agent name and description
+- Select a data source
+- Configure data scraping parameters
+- Set pricing and other details
+
+## Authentication
+
+The application uses a secure authentication system with password hashing and session management:
+
+1. **Register a new account**
+   - Navigate to `/auth` and use the registration form
+   - Username and password are required
+
+2. **Login to existing account**
+   - Use the login form with your credentials
+   - Sessions are persistent and stored in the database
+
+3. **Protected routes**
+   - Certain routes require authentication
+   - The system uses Passport.js for authentication management
+
+## Development Commands
+
+```bash
+# Start development server
+npm run dev
+
+# Push database schema changes
+npm run db:push
+
+# Build for production
+npm run build
+
+# Start production server
+npm run start
+```
+
+## Deployment
+
+For deploying to Replit:
+
+1. Clone the repository to your Replit project
+2. Install dependencies using `npm install`
+3. Set up environment variables in the Replit Secrets panel
+4. Deploy using Replit's deployment features
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- [shadcn/ui](https://ui.shadcn.com/) - UI component library
+- [Apify](https://apify.com) - Web scraping and automation platform
+- [Drizzle ORM](https://orm.drizzle.team/) - TypeScript ORM
+- [Replit](https://replit.com) - Development and hosting platform

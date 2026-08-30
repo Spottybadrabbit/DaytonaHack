@@ -1,0 +1,7 @@
+<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg">
+  <!-- Agents in the Wild brand mark: serif "A." echoing the landing's
+       editorial display type (Define. Deploy. Scale.), accent-pink period. -->
+  <rect width="180" height="180" fill="#0a0a0a" />
+  <text x="78" y="132" text-anchor="middle" font-family="'Instrument Serif', Georgia, 'Times New Roman', serif" font-size="128" fill="#fafafa">A</text>
+  <circle cx="138" cy="122" r="11" fill="#eca8d6" />
+</svg>

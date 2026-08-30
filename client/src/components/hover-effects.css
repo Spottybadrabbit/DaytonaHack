@@ -1,0 +1,117 @@
+/* Hover effects and micro-interactions */
+
+/* Subtle scale effect */
+.scale-on-hover {
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+.scale-on-hover:hover {
+  transform: scale(1.03);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+/* Gentle glow effect */
+.glow-on-hover {
+  transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+
+.glow-on-hover:hover {
+  box-shadow: 0 0 15px hsla(var(--primary), 0.4);
+  transform: translateY(-2px);
+}
+
+/* Smooth border highlight */
+.border-highlight {
+  position: relative;
+  transition: transform 0.2s ease;
+}
+
+.border-highlight::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background-color: hsl(var(--primary));
+  transition: width 0.3s ease;
+}
+
+.border-highlight:hover::after {
+  width: 100%;
+}
+
+/* Button hover effects */
+.button-hover {
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.button-hover:hover {
+  transform: translateY(-1px);
+}
+
+.button-hover:active {
+  transform: translateY(1px);
+}
+
+/* Card hover effects */
+.card-hover {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+/* Gradient hover effect for special cards */
+.gradient-hover {
+  position: relative;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  transition: all 0.3s ease;
+}
+
+.gradient-hover:hover {
+  background-image: 
+    linear-gradient(to bottom right, #ffffff, #ffffff),
+    linear-gradient(to bottom right, hsl(var(--primary)), hsl(var(--primary-foreground)));
+  box-shadow: 0 10px 30px hsla(var(--primary), 0.2);
+  transform: translateY(-3px);
+}
+
+/* Icon hover effect */
+.icon-spin {
+  transition: transform 0.3s ease;
+}
+
+.icon-spin:hover {
+  transform: rotate(15deg);
+}
+
+/* Pulsing effect */
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 hsla(var(--primary), 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px hsla(var(--primary), 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsla(var(--primary), 0);
+  }
+}
+
+.pulse-effect:hover {
+  animation: pulse 1.5s infinite;
+}
+
+/* Interaction feedback for inputs */
+.input-focus {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-focus:focus {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 2px hsla(var(--primary), 0.2);
+}
