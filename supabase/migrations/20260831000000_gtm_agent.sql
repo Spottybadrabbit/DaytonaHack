@@ -38,9 +38,11 @@ create table if not exists public.gtm_leads (
   linkedin_url    text,
   verification    jsonb not null default '{}',
   source_payload  jsonb not null default '{}',
-  created_at      timestamptz not null default now(),
-  unique (agent_id, email) where email is not null
+  created_at      timestamptz not null default now()
 );
+
+create unique index if not exists gtm_leads_unique_email
+  on public.gtm_leads (agent_id, email) where email is not null;
 
 create index if not exists gtm_leads_agent_idx on public.gtm_leads (agent_id, created_at desc);
 
