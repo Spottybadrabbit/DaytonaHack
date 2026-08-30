@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0.06 0.008 260;
+    --foreground: 0.94 0.005 90;
+    --card: 0.09 0.008 260;
+    --muted: 0.12 0.008 260;
+    --muted-foreground: 0.55 0.015 90;
+    --border: 0.18 0.008 260;
+    --primary: 0.94 0.005 90;
+    --primary-foreground: 0.06 0.008 260;
+    --destructive: 0.577 0.245 27.325;
+    --wild: 0.78 0.16 155;
+  }
+
+  * {
+    border-color: oklch(var(--border));
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    background-image:
+      radial-gradient(60rem 40rem at 12% -10%, oklch(0.22 0.06 168 / 0.28), transparent 60%),
+      radial-gradient(50rem 34rem at 92% 8%, oklch(0.2 0.07 285 / 0.24), transparent 62%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: oklch(var(--wild) / 0.28);
+  }
+}
+
+@layer components {
+  .container-wild {
+    @apply mx-auto w-full max-w-6xl px-5 sm:px-8;
+  }
+
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground;
+  }
+
+  .panel {
+    @apply rounded-lg border border-border bg-card/70 backdrop-blur-sm;
+  }
+
+  .hairline {
+    @apply h-px w-full bg-gradient-to-r from-transparent via-border to-transparent;
+  }
+}
