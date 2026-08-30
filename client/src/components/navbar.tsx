@@ -14,6 +14,8 @@ export default function Navbar() {
     { href: "/", label: "Homepage" },
     { href: "/dashboard", label: "Dashboard" },
     { href: "/chat", label: "Field Lab" },
+    { href: "/gtm", label: "GTM" },
+    { href: "/crm", label: "CRM" },
     { href: "/marketplace", label: "Marketplace" },
   ];
 

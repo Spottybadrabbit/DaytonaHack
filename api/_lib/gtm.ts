@@ -1,0 +1,503 @@
+import { randomUUID } from "node:crypto";
+import { Daytona } from "@daytona/sdk";
+import {
+  supabaseJson,
+  supabaseResponse,
+} from "./supabase.js";
+import { GTM_DIR, GTM_AGENT, GTM_STATE, GTM_ICP, GTM_SUPPRESSION, GTM_SEND_QUEUE, gtmAgentSource } from "./gtm-runner.js";
+import { notifyLead } from "./notify.js";
+
+const PARALLEL_HOSTS = "api.parallel.ai,*.parallel.ai";
+const DEEPLINE_HOSTS = "deepline.com,*.deepline.com,code.deepline.com,registry.npmjs.org,*.npmjs.org";
+
+type GtmStatus = "idle" | "hunting" | "paused" | "error";
+
+export interface GtmAgentRow {
+  id: string;
+  agent_id: string;
+  owner_id: string;
+  status: GtmStatus;
+  mode: "draft" | "autosend";
+  icp: Record<string, unknown>;
+  limits: Record<string, unknown>;
+  state: Record<string, unknown>;
+  name?: string | null;
+  description?: string | null;
+  sandbox_id?: string;
+  session_id?: string;
+  command_id?: string;
+  last_seen_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GtmLeadRow {
+  id: string;
+  agent_id: string;
+  owner_id: string;
+  company_name: string | null;
+  domain: string | null;
+  name: string | null;
+  title: string | null;
+  email: string | null;
+  linkedin_url: string | null;
+  verification: unknown;
+  source_payload: unknown;
+  created_at: string;
+}
+
+export interface GtmOutreachRow {
+  id: string;
+  agent_id: string;
+  lead_id: string | null;
+  owner_id: string;
+  channel: string;
+  to_address: string;
+  subject: string | null;
+  body: string | null;
+  status: "draft" | "approved" | "sent" | "failed" | "replied";
+  provider_ids: unknown;
+  sent_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GtmActivityRow {
+  id: string;
+  agent_id: string;
+  owner_id: string;
+  cycle: number;
+  step: string;
+  tool: string | null;
+  subject: string | null;
+  outcome: string | null;
+  meta: unknown;
+  elapsed_ms: number | null;
+  created_at: string;
+}
+
+interface EmbeddedGtmAgentRow extends GtmAgentRow {
+  agents?: { name: string | null; description: string | null } | Array<{ name: string | null; description: string | null }> | null;
+}
+
+function agentDetails(row: EmbeddedGtmAgentRow): GtmAgentRow {
+  const embedded = Array.isArray(row.agents) ? row.agents[0] : row.agents;
+  const agent = { ...row };
+  delete agent.agents;
+  return {
+    ...agent,
+    name: embedded?.name ?? null,
+    description: embedded?.description ?? null,
+  };
+}
+
+export function toGtmAgentView(agent: GtmAgentRow) {
+  const {
+    sandbox_id: _sandboxId,
+    session_id: _sessionId,
+    command_id: _commandId,
+    ...view
+  } = agent;
+  return view;
+}
+
+async function gtmAgentsQuery(filter: string): Promise<GtmAgentRow[]> {
+  let rows: EmbeddedGtmAgentRow[];
+  try {
+    rows = await supabaseJson<EmbeddedGtmAgentRow[]>(
+      `gtm_agent_state?select=*,agents(name,description)${filter}`,
+    );
+  } catch {
+    rows = await supabaseJson<EmbeddedGtmAgentRow[]>(
+      `gtm_agent_state?select=*${filter}`,
+    );
+  }
+
+  const missing = rows
+    .filter((row) => !row.agents || (Array.isArray(row.agents) && row.agents.length === 0))
+    .map((row) => row.agent_id);
+  if (missing.length > 0) {
+    const agents = await supabaseJson<Array<{ id: string; name: string | null; description: string | null }>>(
+      `agents?select=id,name,description&id=in.(${missing.join(",")})`,
+    );
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    rows = rows.map((row) => row.agents ? row : { ...row, agents: byId.get(row.agent_id) ?? null });
+  }
+
+  return rows.map(agentDetails);
+}
+
+function daytona(): Daytona {
+  const apiKey = process.env.DAYTONA_API_KEY;
+  if (!apiKey) throw new Error("Daytona is not configured.");
+  return new Daytona({ apiKey, requestTimeoutMs: 90_000 });
+}
+
+export function hasGtm(): boolean {
+  return Boolean(process.env.DAYTONA_API_KEY && process.env.DEEPLINE_API_KEY);
+}
+
+function cleanLogLine(line: string): string {
+  // Daytona frames chunks with control bytes; strip them before parsing.
+  return line.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim();
+}
+
+export function parseGtmLog(raw: string) {
+  const events: Array<Record<string, unknown>> = [];
+  const leads: Array<Record<string, unknown>> = [];
+  const outreach: Array<Record<string, unknown>> = [];
+  let done = false;
+  let needsAuth: string | null = null;
+  let error: string | null = null;
+
+  for (const line of raw.split("\n")) {
+    const text = cleanLogLine(line);
+    if (!text.startsWith("::gtm-")) continue;
+    // Markers look like `::gtm-<tag>:<json>` — the separator search must start
+    // past the `::gtm-` prefix or it matches the leading colon and the tag is "".
+    const colon = text.indexOf(":", 6);
+    if (colon === -1) continue;
+    const tag = text.slice(6, colon);
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(text.slice(colon + 1));
+    } catch {
+      payload = { raw: text.slice(colon + 1).slice(0, 1000) };
+    }
+
+    switch (tag) {
+      case "event":
+        events.push(payload);
+        break;
+      case "lead":
+        leads.push(payload.lead as Record<string, unknown>);
+        break;
+      case "outreach":
+        outreach.push(payload);
+        break;
+      case "needs_auth":
+        needsAuth = (payload.authUrl as string) || "https://deepline.com/login";
+        break;
+      case "done":
+        done = true;
+        break;
+      case "error":
+        error = String(payload.message || payload);
+        break;
+    }
+  }
+
+  return { events, leads, outreach, done, needsAuth, error };
+}
+
+async function uploadConfig(
+  sandbox: any,
+  state: Record<string, unknown>,
+  icp: Record<string, unknown>,
+  suppression: { emails: string[]; domains: string[] },
+  sendQueue: unknown[],
+) {
+  await sandbox.process.executeCommand(`mkdir -p ${GTM_DIR}`);
+  await sandbox.fs.uploadFile(Buffer.from(JSON.stringify({ ...state, agentId: state.agentId }), "utf8"), `${GTM_DIR}/${GTM_STATE}`);
+  await sandbox.fs.uploadFile(Buffer.from(JSON.stringify(icp), "utf8"), `${GTM_DIR}/${GTM_ICP}`);
+  await sandbox.fs.uploadFile(Buffer.from(JSON.stringify(suppression), "utf8"), `${GTM_DIR}/${GTM_SUPPRESSION}`);
+  await sandbox.fs.uploadFile(Buffer.from(JSON.stringify({ items: sendQueue }), "utf8"), `${GTM_DIR}/${GTM_SEND_QUEUE}`);
+  await sandbox.fs.uploadFile(Buffer.from(gtmAgentSource(), "utf8"), `${GTM_DIR}/${GTM_AGENT}`);
+}
+
+export async function createGtmSandbox(
+  agentState: GtmAgentRow,
+  approvedDrafts: unknown[] = [],
+): Promise<{ sandboxId: string; sessionId: string; commandId: string; state: Record<string, unknown> }> {
+  const client = daytona();
+  const sandbox = await client.create(
+    {
+      name: `agents-wild-gtm-${agentState.agent_id.slice(0, 8)}-${randomUUID().slice(0, 8)}`,
+      language: "typescript",
+      public: false,
+      labels: { app: "agents-in-the-wild", role: "gtm-agent", agent: agentState.agent_id },
+      envVars: {
+        DEEPLINE_API_KEY: process.env.DEEPLINE_API_KEY || "",
+        GTM_SEND_TOOL_ID: process.env.GTM_SEND_TOOL_ID || "lemlist_send_email",
+      },
+      domainAllowList: `${DEEPLINE_HOSTS},${PARALLEL_HOSTS}`,
+      autoStopInterval: 60,
+      ttlMinutes: 720,
+    },
+    { timeout: 90 },
+  );
+
+  const sessionId = `gtm-${agentState.agent_id.slice(0, 8)}`;
+  await sandbox.process.createSession(sessionId);
+
+  const suppression = { emails: [] as string[], domains: [] as string[] };
+  const nextState = { ...agentState.state, log_offset: 0 };
+  await uploadConfig(
+    sandbox,
+    { ...nextState, agentId: agentState.agent_id, mode: agentState.mode },
+    agentState.icp,
+    suppression,
+    approvedDrafts,
+  );
+
+  const cmd = await sandbox.process.executeSessionCommand(sessionId, {
+    command: `cd ${GTM_DIR} && npm install -g --no-audit --no-fund --silent deepline@latest && node ${GTM_DIR}/${GTM_AGENT}`,
+    runAsync: true,
+    suppressInputEcho: true,
+  });
+  if (!cmd.cmdId) throw new Error("Daytona did not return a GTM command ID.");
+
+  await supabaseResponse(`gtm_agent_state?id=eq.${encodeURIComponent(agentState.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      sandbox_id: sandbox.id,
+      session_id: sessionId,
+      command_id: cmd.cmdId,
+      status: "hunting",
+      state: nextState,
+      updated_at: new Date().toISOString(),
+    }),
+  });
+
+  return { sandboxId: sandbox.id, sessionId, commandId: cmd.cmdId, state: nextState };
+}
+
+export async function resumeGtmCycle(
+  agentState: GtmAgentRow,
+  approvedDrafts: unknown[] = [],
+): Promise<{ sandboxId: string; sessionId: string; commandId: string; state: Record<string, unknown> }> {
+  if (!agentState.sandbox_id) return createGtmSandbox(agentState, approvedDrafts);
+
+  const client = daytona();
+  try {
+    const sandbox = await client.get(agentState.sandbox_id);
+    const sessionId = agentState.session_id || `gtm-${agentState.agent_id.slice(0, 8)}`;
+
+    const nextState = { ...agentState.state, log_offset: 0 };
+    await uploadConfig(
+      sandbox,
+      { ...nextState, agentId: agentState.agent_id, mode: agentState.mode },
+      agentState.icp,
+      { emails: [], domains: [] },
+      approvedDrafts,
+    );
+
+    const cmd = await sandbox.process.executeSessionCommand(sessionId, {
+      command: `cd ${GTM_DIR} && node ${GTM_DIR}/${GTM_AGENT}`,
+      runAsync: true,
+      suppressInputEcho: true,
+    });
+    if (!cmd.cmdId) throw new Error("Daytona did not return a GTM command ID.");
+
+    await supabaseResponse(`gtm_agent_state?id=eq.${encodeURIComponent(agentState.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        command_id: cmd.cmdId,
+        session_id: sessionId,
+        status: "hunting",
+        state: nextState,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+
+    return { sandboxId: sandbox.id, sessionId, commandId: cmd.cmdId, state: nextState };
+  } catch {
+    // Sandbox gone; recreate.
+    return createGtmSandbox(agentState, approvedDrafts);
+  }
+}
+
+export async function pollAndIngest(agentState: GtmAgentRow): Promise<GtmAgentRow> {
+  if (!agentState.sandbox_id || !agentState.session_id || !agentState.command_id) return agentState;
+
+  const client = daytona();
+  let raw = "";
+  try {
+    const sandbox = await client.get(agentState.sandbox_id);
+    const logs = await sandbox.process.getSessionCommandLogs(agentState.session_id, agentState.command_id);
+    raw = logs?.output ?? [logs?.stdout, logs?.stderr].filter(Boolean).join("\n") ?? "";
+  } catch (error) {
+    await updateGtmStatus(agentState.id, "error", { error_message: error instanceof Error ? error.message : "poll failed" });
+    return { ...agentState, status: "error" };
+  }
+
+  const rawOffset = agentState.state.log_offset;
+  const offset = typeof rawOffset === "number" && rawOffset >= 0 ? rawOffset : 0;
+  const consumed = raw.slice(offset);
+  const completeLength = consumed.lastIndexOf("\n") + 1;
+  const nextLogOffset = offset + completeLength;
+  const parsed = parseGtmLog(consumed.slice(0, completeLength));
+  const cycle = (agentState.state.cycle as number) || 0;
+  const nextState = { ...agentState.state, log_offset: nextLogOffset };
+
+  for (const e of parsed.events) {
+    await supabaseResponse("gtm_activity", {
+      method: "POST",
+      body: JSON.stringify({
+        agent_id: agentState.agent_id,
+        owner_id: agentState.owner_id,
+        cycle: (e.cycle as number) || cycle,
+        step: String(e.step || "tool"),
+        tool: e.tool ? String(e.tool) : null,
+        subject: e.domain ? String(e.domain) : null,
+        outcome: e.status ? String(e.status) : null,
+        meta: e,
+        elapsed_ms: typeof e.elapsed === "number" ? e.elapsed : null,
+      }),
+    });
+  }
+
+  for (const l of parsed.leads) {
+    try {
+      await supabaseResponse("gtm_leads", {
+        method: "POST",
+        body: JSON.stringify({
+          agent_id: agentState.agent_id,
+          owner_id: agentState.owner_id,
+          company_name: l.company || l.company_name || null,
+          domain: l.domain ? String(l.domain).toLowerCase() : null,
+          name: l.name ? String(l.name) : null,
+          title: l.title ? String(l.title) : null,
+          email: l.email ? String(l.email).toLowerCase() : null,
+          linkedin_url: l.linkedin_url ? String(l.linkedin_url) : null,
+          verification: l.verification || (l.verified ? { safe: true } : {}),
+          source_payload: l,
+        }),
+      });
+      void notifyLead(l);
+    } catch {
+      // dedupe unique(email) may collide; ignore.
+    }
+  }
+
+  for (const o of parsed.outreach) {
+    // upsert by natural key is hard without id; store each event. Simplest: insert and rely on later reconciliation.
+    await supabaseResponse("gtm_outreach", {
+      method: "POST",
+      body: JSON.stringify({
+        agent_id: agentState.agent_id,
+        owner_id: agentState.owner_id,
+        lead_id: null,
+        channel: "email",
+        to_address: o.to ? String(o.to) : "",
+        subject: o.subject ? String(o.subject) : null,
+        body: o.body ? String(o.body) : null,
+        status: ["draft", "approved", "sent", "failed", "replied"].includes(String(o.status))
+          ? o.status
+          : "draft",
+        provider_ids: o.provider_result || {},
+        sent_at: o.status === "sent" ? new Date().toISOString() : null,
+      }),
+    });
+  }
+
+  if (parsed.needsAuth) {
+    await updateGtmStatus(agentState.id, "error", {
+      error_message: `Deepline needs browser authorization: ${parsed.needsAuth}`,
+      state: nextState,
+    });
+    return { ...agentState, status: "error", state: nextState };
+  }
+
+  if (parsed.error) {
+    await updateGtmStatus(agentState.id, "error", { error_message: parsed.error, state: nextState });
+    return { ...agentState, status: "error", state: nextState };
+  }
+
+  if (parsed.done) {
+    const doneState = { ...nextState, cycle: ((agentState.state.cycle as number) || 0) + 1 };
+    await updateGtmStatus(agentState.id, "idle", { state: doneState });
+    return { ...agentState, status: "idle", state: doneState };
+  }
+
+  await updateGtmStatus(agentState.id, agentState.status, { state: nextState });
+  return { ...agentState, state: nextState };
+}
+
+async function updateGtmStatus(id: string, status: GtmStatus, patch: Record<string, unknown>) {
+  await supabaseResponse(`gtm_agent_state?id=eq.${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      status,
+      ...patch,
+      updated_at: new Date().toISOString(),
+    }),
+  });
+}
+
+export async function loadGtmAgent(id: string, ownerId: string): Promise<GtmAgentRow | null> {
+  const rows = await gtmAgentsQuery(
+    `&id=eq.${encodeURIComponent(id)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
+  );
+  return rows[0] ?? null;
+}
+
+export async function findOwnedGtmAgentByAgentId(agentId: string, ownerId: string): Promise<GtmAgentRow | null> {
+  const rows = await gtmAgentsQuery(
+    `&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
+  );
+  return rows[0] ?? null;
+}
+
+export async function listGtmAgents(ownerId: string): Promise<GtmAgentRow[]> {
+  return gtmAgentsQuery(
+    `&owner_id=eq.${encodeURIComponent(ownerId)}&order=updated_at.desc`,
+  );
+}
+
+export async function listActiveGtmAgents(): Promise<GtmAgentRow[]> {
+  return gtmAgentsQuery(
+    `&status=in.("hunting","idle")&order=updated_at.desc`,
+  );
+}
+
+export async function listGtmLeads(agentId: string, ownerId: string, limit = 50): Promise<GtmLeadRow[]> {
+  return supabaseJson<GtmLeadRow[]>(
+    `gtm_leads?select=*&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&order=created_at.desc&limit=${limit}`,
+  );
+}
+
+export async function listGtmOutreach(agentId: string, ownerId: string): Promise<GtmOutreachRow[]> {
+  return supabaseJson<GtmOutreachRow[]>(
+    `gtm_outreach?select=*&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&order=created_at.desc`,
+  );
+}
+
+export async function listGtmActivity(agentId: string, ownerId: string, limit = 100): Promise<GtmActivityRow[]> {
+  return supabaseJson<GtmActivityRow[]>(
+    `gtm_activity?select=*&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&order=created_at.desc&limit=${limit}`,
+  );
+}
+
+export async function setGtmMode(agentId: string, ownerId: string, mode: "draft" | "autosend") {
+  await supabaseResponse(
+    `gtm_agent_state?agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ mode, updated_at: new Date().toISOString() }),
+    },
+  );
+}
+
+export async function approveOutreach(outreachId: string, ownerId: string): Promise<void> {
+  const rows = await supabaseJson<{ agent_id: string }[]>(
+    `gtm_outreach?select=agent_id&id=eq.${encodeURIComponent(outreachId)}&owner_id=eq.${encodeURIComponent(ownerId)}&limit=1`,
+  );
+  if (!rows[0]) throw new Error("Outreach not found.");
+  await supabaseResponse(`gtm_outreach?id=eq.${encodeURIComponent(outreachId)}&owner_id=eq.${encodeURIComponent(ownerId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "approved", updated_at: new Date().toISOString() }),
+  });
+}
+
+export async function collectApprovedOutreach(agentId: string, ownerId: string): Promise<unknown[]> {
+  const rows = await supabaseJson<GtmOutreachRow[]>(
+    `gtm_outreach?select=*&agent_id=eq.${encodeURIComponent(agentId)}&owner_id=eq.${encodeURIComponent(ownerId)}&status=eq.approved`,
+  );
+  return rows.map((r) => ({
+    to: r.to_address,
+    subject: r.subject,
+    body: r.body,
+    lead: { name: null, email: r.to_address, title: null, company: null },
+  }));
+}
