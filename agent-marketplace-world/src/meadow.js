@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export function createMeadow(canvas, onActivity) {
+export function createMeadow(canvas, onActivity, marketplaceAgents = []) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -56,7 +56,18 @@ export function createMeadow(canvas, onActivity) {
     { startup: 'Latticewell', industry: 'Future of work', public: 'Listening for warm-intro signals across the meadow.', private: 'Found a second-degree path to a partner at the target fund.', badges: ['Warm path', '7 targets', 'Series A'] },
     { startup: 'Daymark', industry: 'Education', public: 'Helping a fellow founder rehearse their accelerator story.', private: 'Prepared a program-specific application and feedback checklist.', badges: ['1 accepted', '2 applications', 'Seed'] }
   ];
-  agents.forEach((agent, i) => { scene.add(agent.group); agent.profile = profiles[i]; agent.kind='agent'; agent.group.userData={target:agent}; agent.group.rotation.y = i === 0 ? .55 : i === 1 ? -.55 : Math.PI; });
+  agents.forEach((agent, i) => {
+    const listing = marketplaceAgents[i];
+    scene.add(agent.group);
+    agent.profile = listing ? {
+      startup: listing.name,
+      industry: listing.type || 'Marketplace agent',
+      public: listing.description || 'A resident agent is active in the marketplace.',
+      private: listing.description || 'This agent is ready to join your founder workflow.',
+      badges: [listing.status || 'published', listing.performance || 'active', listing.type || 'Agent'],
+    } : profiles[i];
+    agent.kind='agent'; agent.group.userData={target:agent}; agent.group.rotation.y = i === 0 ? .55 : i === 1 ? -.55 : Math.PI;
+  });
   const houses = [
     makeCapitalHouse({name:'Verdant House', subtitle:'CLIMATE & INDUSTRIAL', position:[-17,0,-11], color:'#69b879', light:'#e4f39a', profile:{industry:'Climate & industrial',public:'Verdant House is opening its seed-stage signal room.',private:'Open this week: climate and industrial tools with early B2B traction.',badges:['Seed focus','£250k–£2m','3 active paths']}}),
     makeCapitalHouse({name:'Signal House', subtitle:'AI & INFRASTRUCTURE', position:[17,0,-12], color:'#7888df', light:'#c9d2ff', profile:{industry:'AI & infrastructure',public:'Signal House is listening for technical founder stories.',private:'Partner office hour opens Friday for AI infrastructure and devtools.',badges:['Partner office hour','Pre-seed–A','8 active paths']}}),
@@ -74,7 +85,7 @@ export function createMeadow(canvas, onActivity) {
   canvas.addEventListener('click', () => { ray.setFromCamera(pointer,camera); const hit=ray.intersectObjects([...agents,...houses].map(a=>a.group),true)[0]; if(hit){let root=hit.object; while(root.parent&&root.parent!==scene)root=root.parent; const target=root.userData.target; if(target) publishEncounter(target,true);} });
   addEventListener('keydown', e => { if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)) return; const key=e.key.toLowerCase(); if(['arrowup','arrowdown','arrowleft','arrowright','w','a','s','d'].includes(key)){heldKeys.add(key);e.preventDefault()} if(key==='enter'&&nearbyTarget)publishEncounter(nearbyTarget,true); });
   addEventListener('keyup', e => heldKeys.delete(e.key.toLowerCase()));
-  function publishEncounter(target, force=false){if(!force&&nearbyTarget===target)return;nearbyTarget=target;const p=target.profile;const prefix=target.kind==='house'?'Capital House':'Wildling';onActivity(authenticated?{title:`${target.name} · ${prefix}`,detail:p.private,meta:{industry:p.industry,badges:p.badges,locked:false}}:{title:`${target.name} · ${prefix}`,detail:p.public,meta:{industry:'Log in to reveal thesis',badges:['Preview only'],locked:true}})}
+  function publishEncounter(target, force=false){if(!force&&nearbyTarget===target)return;nearbyTarget=target;const p=target.profile;const prefix=target.kind==='house'?'Capital House':'Wildling';const displayName=p.startup || target.name;onActivity(authenticated?{title:`${displayName} · ${prefix}`,detail:p.private,meta:{industry:p.industry,badges:p.badges,locked:false}}:{title:`${displayName} · ${prefix}`,detail:p.public,meta:{industry:'Log in to reveal thesis',badges:['Preview only'],locked:true}})}
   let clock = new THREE.Clock(), elapsed=0; function render(){const dt=Math.min(clock.getDelta(),.05),t=elapsed+=dt;const step=dt*4.8; if(heldKeys.has('arrowup')||heldKeys.has('w'))explorer.z-=step;if(heldKeys.has('arrowdown')||heldKeys.has('s'))explorer.z+=step;if(heldKeys.has('arrowleft')||heldKeys.has('a'))explorer.x-=step;if(heldKeys.has('arrowright')||heldKeys.has('d'))explorer.x+=step;explorer.x=THREE.MathUtils.clamp(explorer.x,-42,42);explorer.z=THREE.MathUtils.clamp(explorer.z,-42,42);controls.azimuth+=(controls.target-controls.azimuth)*.05;camera.position.x=explorer.x+Math.sin(controls.azimuth)*14.5;camera.position.y=7.8;camera.position.z=explorer.z+Math.cos(controls.azimuth)*14.5;camera.lookAt(explorer.x,.45,explorer.z-1.5);explorerMarker.position.set(explorer.x,.05,explorer.z);explorerMarker.rotation.z-=.025;let nearest=null,best=3.6;agents.forEach((a,i)=>{a.group.position.y=.55+Math.sin(t*1.7+i)*.075;a.group.rotation.y+=(i===2?.004:-.004);a.animate?.(t+i*.8);const distance=Math.hypot(a.group.position.x-explorer.x,a.group.position.z-explorer.z);if(distance<best){best=distance;nearest=a}});houses.forEach(h=>{h.animate(t);const distance=Math.hypot(h.group.position.x-explorer.x,h.group.position.z-explorer.z);if(distance<5.8&&distance<best){best=distance;nearest=h}});if(nearest)publishEncounter(nearest);else if(nearbyTarget){nearbyTarget=null;onActivity({title:'Explore the living meadow',detail:'Walk toward a glowing Wildling or Capital House to overhear an agent exchange.',meta:{industry:'Guest preview',badges:['← ↑ ↓ → move'],locked:true}})}pulse.scale.setScalar(1+Math.sin(t*3)*.2);pulse.position.x=Math.sin(t*1.2)*.32;pulse.position.z=Math.cos(t*1.2)*.32;renderer.render(scene,camera);requestAnimationFrame(render)}
   function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix()}addEventListener('resize',resize);resize();render();
   return { setAuthenticated(value){authenticated=value;if(nearbyTarget)publishEncounter(nearbyTarget,true)}, addFounderWildling({description,stage,goal}) { const seed=hash(description); const colors=[['#a986ee','#e6bcff'],['#f5a45e','#ffdfa3'],['#55c6d3','#a7f0ed']][seed%3]; const founder=makeWildling(colors[0],colors[1],'Your Wildling',[0,.55,2.6],.88); founder.kind='agent';founder.profile={startup:'Your startup',industry:'Founder profile',public:'A new Wildling has arrived at the meadow.',private:`Building a path to ${goal}.`,badges:[stage,goal,'Just joined']};founder.group.rotation.y=Math.PI; founder.group.userData={target:founder}; scene.add(founder.group); agents.push(founder); } };

@@ -10,7 +10,7 @@ import AgentDetails from "@/pages/agent-details";
 import Dashboard from "@/pages/dashboard";
 import CreateAgent from "@/pages/create-agent";
 import Chat from "@/pages/chat";
-import Marketplace from "@/pages/apify-actors"; // Renaming apify-actors to Marketplace
+import MarketplaceWorld from "@/pages/marketplace-world";
 import Pricing from "@/pages/pricing";
 import Checkout from "@/pages/checkout";
 import Account from "@/pages/account";
@@ -38,6 +38,7 @@ const CHROMELESS_ROUTES = new Set([
   "/privacy",
   "/terms",
   "/security",
+  "/marketplace",
 ]);
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -79,7 +80,7 @@ function Router() {
             <Chat />
           </RequireAuth>
         </Route>
-        <Route path="/marketplace" component={Marketplace} />
+        <Route path="/marketplace" component={MarketplaceWorld} />
         <Route path="/pricing" component={Pricing} />
         <Route path="/checkout" component={Checkout} />
         <Route path="/account" component={Account} />
